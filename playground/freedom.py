@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
+os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 
@@ -10,6 +11,8 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch.optim.adam import Adam
 from torch_geometric.data import Data
@@ -27,9 +30,10 @@ from graphnet.data.utilities.string_selection_resolver import (
 from graphnet.models import Model, StandardModel
 from graphnet.models.detector.prometheus import Prometheus
 from graphnet.models.gnn import DynEdge
+from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
-from graphnet.models.task.classification import BinaryClassificationTask
+from graphnet.models.task.classification import freedom_BinaryClassificationTask
 from graphnet.training.callbacks import PiecewiseLinearLR
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
@@ -821,7 +825,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
 
 """let dataloader pick the new freedom dataset class"""
 
-def make_dataloader(
+def make_freedom_dataloader(
     db: str,
     pulsemaps: Union[str, List[str]],
     graph_definition: GraphDefinition,
@@ -979,13 +983,13 @@ def make_train_validation_dataloader(
         graph_definition=graph_definition,
     )
 
-    training_dataloader = make_dataloader(
+    training_dataloader = make_freedom_dataloader(
         shuffle=True,
         selection=training_selection,
         **common_kwargs,  # type: ignore[arg-type]
     )
 
-    validation_dataloader = make_dataloader(
+    validation_dataloader = make_freedom_dataloader(
         shuffle=False,
         selection=validation_selection,
         **common_kwargs,  # type: ignore[arg-type]
@@ -1024,7 +1028,7 @@ class LikelihoodFreeModel(StandardModel):
         assert len(tasks) == 1
 
         # Only works with binary classification
-        assert isinstance(tasks[0], BinaryClassificationTask)
+        assert isinstance(tasks[0], freedom_BinaryClassificationTask)
 
         # pass args
         super().__init__(graph_definition = graph_definition,
@@ -1100,7 +1104,7 @@ class ScrambledZenith(Label):
         assert  self._scramble_flag in graph.keys()
         assert graph[self._scramble_flag] is not None
         
-        if graph[self._scramble_flag] == 0:
+        if graph[self._scramble_flag] == 1:
             val = graph[self._zenith_key].unsqueeze(0)
         else:
             val = self.zenith
@@ -1162,13 +1166,32 @@ class ScrambledDirection(Label):
         ).reshape(-1, 1)
         z = torch.cos(graph[self._zenith_key]).reshape(-1, 1)
 
-        if graph[self._scramble_flag] == 0:
+        if graph[self._scramble_flag] == 1:
             val = torch.cat((x, y, z), dim=1)
         else:
             val = self.direction
             self.direction = torch.cat((x, y, z), dim=1)
         return val
 
+class disc_NeuralNetwork(GNN):
+    def __init__(self, input_size, output_size, hidden_sizes=[16,32,64,32,16]):
+        super().__init__(input_size,output_size)
+        self.fc1 = nn.Linear(input_size, hidden_sizes[0])
+        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+        self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
+        self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
+        self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
+        self.fc6 = nn.Linear(hidden_sizes[4], output_size)
+
+    def forward(self, data):
+        x = data
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = F.relu(self.fc4(x))
+        x = F.relu(self.fc5(x))
+        x = self.fc6(x)
+        return x
 
 
 def main(
@@ -1253,15 +1276,17 @@ def main(
         nb_inputs=graph_definition.nb_outputs,
         global_pooling_schemes=["min", "max", "mean", "sum"],
     )
-    task = BinaryClassificationTask(
+    task = freedom_BinaryClassificationTask(
         hidden_size=1,
         target_labels=config["target"],
         loss_function= BinaryCrossEntropyLoss(),
     )
+    discriminator = disc_NeuralNetwork(backbone.nb_outputs+3, 1)
+
     model = LikelihoodFreeModel(
         graph_definition=graph_definition,
         backbone=backbone,
-        discriminator= torch.nn.Linear(3 + backbone.nb_outputs, 1),
+        discriminator=discriminator,
         scrambled_target="scrambled_direction",
         tasks=[task],
         optimizer_class=Adam,
@@ -1325,11 +1350,11 @@ if __name__ == "__main__":
     pulsemap = 'total'
     target = 'scrambled_class'
     truth_table = 'mc_truth'
-    gpus = None
+    gpus = [0]
     max_epochs = 10
     early_stopping_patience = 2
     batch_size = 2
-    num_workers = 1
+    num_workers = 10
     wandb =  False
 
     main(

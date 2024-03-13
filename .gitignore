@@ -156,4 +156,4 @@ data/examples/output/
 !/data/tests/sqlite/upgrade_genie_step4_140028_000998_first_5_frames/upgrade_genie_step4_140028_000998_first_5_frames.db
 !/data/examples/sqlite/prometheus/prometheus-events.db
 # Notebooks
-**.ipynb
+#**.ipynb

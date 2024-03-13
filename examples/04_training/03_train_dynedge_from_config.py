@@ -15,6 +15,7 @@ from graphnet.utilities.config import (
     TrainingConfig,
 )
 from graphnet.utilities.logging import Logger
+os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 
 
 def main(
@@ -153,7 +154,7 @@ Train GNN model.
     main(
         args.dataset_config,
         args.model_config,
-        args.gpus,
+        [0],
         args.max_epochs,
         args.early_stopping_patience,
         args.batch_size,

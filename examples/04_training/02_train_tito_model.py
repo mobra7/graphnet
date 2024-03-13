@@ -21,6 +21,7 @@ from graphnet.training.loss_functions import VonMisesFisher3DLoss
 from graphnet.training.utils import make_train_validation_dataloader
 from graphnet.utilities.argparse import ArgumentParser
 from graphnet.utilities.logging import Logger
+os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 
 # Constants
 features = FEATURES.PROMETHEUS
@@ -236,7 +237,7 @@ Train GNN model without the use of config files.
         args.pulsemap,
         args.target,
         args.truth_table,
-        args.gpus,
+        [1],
         args.max_epochs,
         args.early_stopping_patience,
         args.batch_size,

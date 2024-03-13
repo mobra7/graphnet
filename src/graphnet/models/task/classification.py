@@ -28,6 +28,21 @@ class BinaryClassificationTask(StandardLearnedTask):
     def _forward(self, x: Tensor) -> Tensor:
         # transform probability of being muon
         return torch.sigmoid(x)
+    
+class freedom_BinaryClassificationTask(StandardLearnedTask):
+    """Performs binary classification."""
+
+    # Requires one feature, logit for being signal class.
+    nb_inputs = 1
+    default_target_labels = ["target"]
+    default_prediction_labels = ["target_pred"]
+
+    def _forward(self, x: Tensor) -> Tensor:
+        # transform probability of being muon
+        if self._inference == True:
+            return torch.exp(x)
+        else:
+            return torch.sigmoid(x)
 
 
 class BinaryClassificationTaskLogits(StandardLearnedTask):
