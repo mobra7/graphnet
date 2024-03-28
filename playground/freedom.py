@@ -6,6 +6,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -28,7 +29,7 @@ from graphnet.data.utilities.string_selection_resolver import (
     StringSelectionResolver
     )
 from graphnet.models import Model, StandardModel
-from graphnet.models.detector.prometheus import Prometheus
+from graphnet.models.detector.icecube import IceCube86
 from graphnet.models.gnn import DynEdge
 from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
@@ -299,11 +300,14 @@ class freedom_Dataset(
         if selection is None:
             self._indices = self._get_all_indices()
         elif isinstance(selection, str):
-            self._indices = self._resolve_string_selection_to_indices(
+            indices = self._resolve_string_selection_to_indices(
                 selection
             )
+            self._indices = [(num, 0) for num in indices] + [(num, 1) for num in indices]
         else:
             self._indices = selection
+
+        assert isinstance(self._indices[0],tuple)
 
         # Purely internal member variables
         self._missing_variables: Dict[str, List[str]] = {}
@@ -732,12 +736,22 @@ class freedom_SQLiteDataset(freedom_Dataset):
         return result, scramble_class
 
     def _get_all_indices(self) -> List[tuple]:
+
+        print('getting all indices')
         self._establish_connection(0)
         indices = pd.read_sql_query(
             f"SELECT {self._index_column} FROM {self._truth_table}", self._conn
         )
         self._close_connection()
-        indices = indices.values.ravel().tolist()
+
+        # Filter based on pulse count
+        conn = sqlite3.connect(self._path)
+        query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+
+        min_count = 1
+        max_count = 200
+        indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
+        print('done')
         return [(num, 0) for num in indices] + [(num, 1) for num in indices]
 
     def _get_event_index(
@@ -757,6 +771,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
     def _get_event_scramble_class(
         self, sequential_index: Optional[int]
     ) -> Union[int, list]:
+        scramble_class: int = 1
         if sequential_index is not None:
             scramble_class_ = self._indices[sequential_index]
             if self._database_list is None:
@@ -1068,7 +1083,7 @@ class LikelihoodFreeModel(StandardModel):
         # Pass both latent vec and scrambled target to discriminator
         x = self._discriminator(x)
 
-        # Pass to identity task
+        # Pass to task
         preds = [task(x) for task in self._tasks]
         return preds
 
@@ -1136,6 +1151,7 @@ class ScrambledDirection(Label):
                 be used to access the zenith angle, used when calculating the
                 direction.
         """
+        print('creating scrambled direction label')
         self._scramble_flag = scramble_flag
         self._azimuth_key = azimuth_key
         self._zenith_key = zenith_key
@@ -1221,8 +1237,8 @@ def main(
         )
 
         # Constants
-    features = FEATURES.PROMETHEUS
-    truth = TRUTH.PROMETHEUS
+    features = FEATURES.ICECUBE86
+    truth = TRUTH.ICECUBE86
 
     # Configuration
     config: Dict[str, Any] = {
@@ -1245,12 +1261,12 @@ def main(
         wandb_logger.experiment.config.update(config)
 
     # Define graph representation
-    graph_definition = KNNGraph(detector=Prometheus())
+    graph_definition = KNNGraph(detector=IceCube86())
 
     # add your labels
 
     labels = {'scrambled_direction': ScrambledDirection(
-        zenith_key='injection_zenith',azimuth_key='injection_azimuth'
+        zenith_key='zenith',azimuth_key='azimuth'
         )
     }
 
@@ -1267,7 +1283,7 @@ def main(
         num_workers=config["num_workers"],
         truth_table=truth_table,
         labels= labels,
-        selection=None,
+        selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
 
     # Building model
@@ -1290,7 +1306,7 @@ def main(
         scrambled_target="scrambled_direction",
         tasks=[task],
         optimizer_class=Adam,
-        optimizer_kwargs={"lr": 1e-03, "eps": 1e-03},
+        optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
         scheduler_class=PiecewiseLinearLR,
         scheduler_kwargs={
             "milestones": [
@@ -1306,13 +1322,13 @@ def main(
     )
 
     # Training model
-    model.fit(
-        training_dataloader,
-        validation_dataloader,
-        early_stopping_patience=config["early_stopping_patience"],
-        logger=wandb_logger if wandb else None,
-        **config["fit"],
-    )
+    # model.fit(
+    #     training_dataloader,
+    #     validation_dataloader,
+    #     early_stopping_patience=config["early_stopping_patience"],
+    #     logger=wandb_logger if wandb else None,
+    #     **config["fit"],
+    # )
 
     # Get predictions
     additional_attributes = model.target_labels
@@ -1346,15 +1362,15 @@ def main(
 if __name__ == "__main__":
 
     # settings
-    path = f"{EXAMPLE_DATA_DIR}/sqlite/prometheus/prometheus-events.db"
-    pulsemap = 'total'
+    path = "/mnt/scratch/rasmus_orsoe/databases/dev_northern_tracks_muon_labels_v3/dev_northern_tracks_muon_labels_v3_part_1.db"
+    pulsemap = 'InIcePulses'
     target = 'scrambled_class'
-    truth_table = 'mc_truth'
-    gpus = [0]
-    max_epochs = 10
-    early_stopping_patience = 2
-    batch_size = 2
-    num_workers = 10
+    truth_table = 'truth'
+    gpus = [1]
+    max_epochs = 50
+    early_stopping_patience = 5
+    batch_size = 200
+    num_workers = 30
     wandb =  False
 
     main(
