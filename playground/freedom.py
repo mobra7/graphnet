@@ -8,8 +8,10 @@ from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
 
+import math
 import numpy as np
 import pandas as pd
+import random
 import sqlite3
 import torch
 import torch.nn as nn
@@ -836,7 +838,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 self._all_connections_established = False
                 self._conn = None
         return self
-    
+
 
 """let dataloader pick the new freedom dataset class"""
 
@@ -860,6 +862,7 @@ def make_freedom_dataloader(
     loss_weight_column: Optional[str] = None,
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
+    no_of_events: Optional[int] = None,
 ) -> DataLoader:
     """Construct `DataLoader` instance."""
     # Check(s)
@@ -881,7 +884,26 @@ def make_freedom_dataloader(
         index_column=index_column,
         graph_definition=graph_definition,
     )
-
+    if no_of_events is not None:
+        selection = dataset._get_all_indices()
+        selection = random.sample(selection, no_of_events)
+        dataset = freedom_SQLiteDataset(
+            path=db,
+            pulsemaps=pulsemaps,
+            features=features,
+            truth=truth,
+            selection=selection,
+            node_truth=node_truth,
+            truth_table=truth_table,
+            node_truth_table=node_truth_table,
+            string_selection=string_selection,
+            loss_weight_table=loss_weight_table,
+            loss_weight_column=loss_weight_column,
+            index_column=index_column,
+            graph_definition=graph_definition,
+        )
+        
+    
     # adds custom labels to dataset
     if isinstance(labels, dict):
         for label in labels.keys():
@@ -912,7 +934,7 @@ def make_train_validation_dataloader(
     batch_size: int,
     database_indices: Optional[List[int]] = None,
     seed: int = 42,
-    test_size: float = 0.33,
+    test_size: float = 0.1,
     num_workers: int = 10,
     persistent_workers: bool = True,
     node_truth: Optional[str] = None,
@@ -1086,9 +1108,82 @@ class LikelihoodFreeModel(StandardModel):
         # Pass to task
         preds = [task(x) for task in self._tasks]
         return preds
+    
+    
+    def predict_skymap(
+        self, data: Union[Data, List[Data]]
+    ) -> List[Union[Tensor, Data]]:
+        """Forward pass, chaining model components."""
+        self.inference()
+        self.train(mode=False)
+
+        if isinstance(data, Data):
+            data = [data]
+        x_list = []
+        y_list = []
+        x_values = []
+        y_values = []
+        z_values = []
+        truth_azimuth = np.empty(shape=0)
+        truth_zenith = np.empty(shape=0)
+        
+        num_directions = 100
+       
+        zenith_values = torch.linspace(-math.pi/2, math.pi/2, num_directions)
+        azimuth_values = torch.linspace(-math.pi, math.pi, num_directions)
+        azimuth = []
+        zenith = []
+        # Expand the azimuth values to match the number of zenith values
+        for ze in zenith_values:
+            for az in azimuth_values:
+                # Calculate x, y, z coordinates for each pair of zenith and azimuth
+                x = torch.cos(az) * torch.sin(ze)
+                y = torch.sin(az) * torch.sin(ze)
+                z = torch.cos(ze)
+                # Append coordinates to respective lists
+                x_values.append(x)
+                y_values.append(y)
+                z_values.append(z)
+                azimuth.append(az.item())
+                zenith.append(ze.item())
+
+        # Convert lists to tensors
+        x = torch.tensor(x_values).reshape(-1, 1)
+        y = torch.tensor(y_values).reshape(-1, 1)
+        z = torch.tensor(z_values).reshape(-1, 1)
 
 
-  
+        # Combine x, y, and z components into a list of directions
+        directions = torch.cat((x, y, z), dim=1)
+        directions_list = [torch.tensor(direction) for direction in directions]
+
+        for d in tqdm(data):
+            x = self.backbone(d)
+            truth_azimuth = np.append(truth_azimuth,d['azimuth'].numpy())
+            truth_zenith = np.append(truth_zenith,d['zenith'].numpy())
+
+            for z in range(x.shape[0]):
+                x_list.extend(len(directions_list)*[x[z]])
+        
+        events_count = int(len(x_list)/len(directions_list))
+        y_list.extend(events_count*directions_list) 
+        x = torch.stack(x_list)
+        y = torch.stack(y_list)
+
+        # Add scrambled target to inputs
+        x = torch.cat([x, y], dim = 1)
+        # Pass both latent vec and scrambled target to discriminator
+        x = self._discriminator(x)
+
+        # Pass to task
+        task_preds = [task(x) for task in self._tasks]
+        pred_chunk = task_preds[0].chunk(events_count) #only takes first task for now
+        preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
+
+        return preds, azimuth, zenith, truth_azimuth, truth_zenith
+
+
+
 
 class ScrambledZenith(Label):
     """."""
@@ -1285,7 +1380,20 @@ def main(
         labels= labels,
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
-
+    
+    skymap_dataloader = make_freedom_dataloader(db=config["path"],
+        graph_definition=graph_definition,
+        pulsemaps=config["pulsemap"],
+        features=features,
+        truth=truth,
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"],
+        truth_table=truth_table,
+        labels= labels,
+        selection= None, #either None, str, or List[(event_no,scramble_class)]
+        no_of_events = 3,
+        shuffle = True,
+    )
     # Building model
 
     backbone = DynEdge(
@@ -1321,18 +1429,55 @@ def main(
         },
     )
 
-    # Training model
-    # model.fit(
-    #     training_dataloader,
-    #     validation_dataloader,
-    #     early_stopping_patience=config["early_stopping_patience"],
-    #     logger=wandb_logger if wandb else None,
-    #     **config["fit"],
-    # )
+    #Training model
+    model.fit(
+        training_dataloader,
+        validation_dataloader,
+        early_stopping_patience=config["early_stopping_patience"],
+        logger=wandb_logger if wandb else None,
+        **config["fit"],
+    )
 
     # Get predictions
     additional_attributes = model.target_labels
     assert isinstance(additional_attributes, list)  # mypy
+    
+    
+
+    skymap, azimuth, zenith, truth_azimuth, truth_zenith = model.predict_skymap(skymap_dataloader)
+    print(len(skymap))
+    print(len(skymap[0]))
+    print('max lr', max(skymap[0]))
+    print('max lr azimuth', azimuth[np.argmax(skymap[0])])
+    print('max lr zenith', zenith[np.argmax(skymap[0])])
+    #print(azimuth)
+    print(truth_azimuth)
+    print(truth_zenith)
+
+    import matplotlib.pyplot as plt
+
+    # Mollweide projection
+    fig = plt.figure(figsize=(10, 5))
+    ax = fig.add_subplot(111, projection='mollweide')
+    ax.grid(True)
+
+    # Plot the data
+    sc = ax.scatter(azimuth, zenith, c=skymap[0]+skymap[1]+skymap[2], cmap='viridis')
+    ax.scatter(truth_azimuth-math.pi, truth_zenith-math.pi/2,c='r',marker = 'x')
+    ax.scatter(azimuth[np.argmax(skymap[0])]-math.pi, zenith[np.argmax(skymap[0])]-math.pi/2,c='w',marker = 'x')
+    ax.scatter(azimuth[np.argmax(skymap[1])]-math.pi, zenith[np.argmax(skymap[1])]-math.pi/2,c='w',marker = 'x')
+    ax.scatter(azimuth[np.argmax(skymap[2])]-math.pi, zenith[np.argmax(skymap[2])]-math.pi/2,c='w',marker = 'x')
+
+    # Colorbar
+    cbar = plt.colorbar(sc, orientation='horizontal')
+    cbar.set_label('likelihood ratio')
+
+    # Set title and labels
+    plt.title('Mollweide Projection')
+    ax.set_xlabel('Azimuth')
+    ax.set_ylabel('Zenith')
+    plt.savefig('./graphnet/playground/mollweide_plot.png')
+    plt.close()
 
     results = model.predict_as_dataframe(
         validation_dataloader,
@@ -1358,7 +1503,6 @@ def main(
     model.save_state_dict(f"{path}/state_dict.pth")
     #model.save_config(f"{path}/model_config.yml")
 
-
 if __name__ == "__main__":
 
     # settings
@@ -1367,9 +1511,9 @@ if __name__ == "__main__":
     target = 'scrambled_class'
     truth_table = 'truth'
     gpus = [1]
-    max_epochs = 50
+    max_epochs = 30
     early_stopping_patience = 5
-    batch_size = 200
+    batch_size = 500
     num_workers = 30
     wandb =  False
 
