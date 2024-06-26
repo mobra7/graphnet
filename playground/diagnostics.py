@@ -1,5 +1,3 @@
-"""Example of training Model."""
-
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
@@ -9,6 +7,7 @@ from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
 from tqdm import tqdm
 
 import healpy as hp
+from healpy.newvisufunc import projview, newprojplot
 import math
 import numpy as np
 import pandas as pd
@@ -45,8 +44,6 @@ from graphnet.training.utils import collate_fn
 from graphnet.utilities.config import (Configurable, DatasetConfig,
                                        DatasetConfigSaverABCMeta)
 from graphnet.utilities.logging import Logger
-
-
 
 class freedom_Dataset(
     Logger,
@@ -738,7 +735,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 raise e
         return result, scramble_class
 
-    def _get_all_indices(self) -> List[tuple]:
+    def _get_all_indices(self, return_type: str = 'both') -> List[tuple]:
 
         print('getting all indices')
         self._establish_connection(0)
@@ -754,8 +751,14 @@ class freedom_SQLiteDataset(freedom_Dataset):
         min_count = 150
         max_count = 300
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
-        print('done')
-        return [(num, 0) for num in indices] + [(num, 1) for num in indices]
+        
+        
+        if return_type == 'scrambled':
+            return [(num, 1) for num in indices]
+        elif return_type == 'unscrambled':
+            return [(num, 0) for num in indices]
+        else:  # return_type == 'both'
+            return [(num, 0) for num in indices] + [(num, 1) for num in indices]
 
     def _get_event_index(
         self, sequential_index: Optional[int]
@@ -840,9 +843,6 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 self._conn = None
         return self
 
-
-"""let dataloader pick the new freedom dataset class"""
-
 def make_freedom_dataloader(
     db: str,
     pulsemaps: Union[str, List[str]],
@@ -864,11 +864,13 @@ def make_freedom_dataloader(
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
     no_of_events: Optional[int] = None,
+    seed = 1,
 ) -> DataLoader:
     """Construct `DataLoader` instance."""
     # Check(s)
     if isinstance(pulsemaps, str):
         pulsemaps = [pulsemaps]
+
 
     dataset = freedom_SQLiteDataset(
         path=db,
@@ -887,7 +889,9 @@ def make_freedom_dataloader(
     )
     if no_of_events is not None:
         selection = dataset._get_all_indices()
+        random.seed(seed)
         selection = random.sample(selection, no_of_events)
+        
         dataset = freedom_SQLiteDataset(
             path=db,
             pulsemaps=pulsemaps,
@@ -921,287 +925,6 @@ def make_freedom_dataloader(
     )
 
     return dataloader
-
-
-# @TODO: Remove in favour of DataLoader{,.from_dataset_config}
-def make_train_validation_dataloader(
-    db: str,
-    graph_definition: GraphDefinition,
-    selection: Optional[List[int]],
-    pulsemaps: Union[str, List[str]],
-    features: List[str],
-    truth: List[str],
-    *,
-    batch_size: int,
-    database_indices: Optional[List[int]] = None,
-    seed: int = 42,
-    test_size: float = 0.1,
-    num_workers: int = 10,
-    persistent_workers: bool = True,
-    node_truth: Optional[str] = None,
-    truth_table: str = "truth",
-    node_truth_table: Optional[str] = None,
-    string_selection: Optional[List[int]] = None,
-    loss_weight_column: Optional[str] = None,
-    loss_weight_table: Optional[str] = None,
-    index_column: str = "event_no",
-    labels: Optional[Dict[str, Callable]] = None,
-) -> Tuple[DataLoader, DataLoader]:
-    """Construct train and test `DataLoader` instances."""
-    # Reproducibility
-    rng = np.random.default_rng(seed=seed)
-    # Checks(s)
-    if isinstance(pulsemaps, str):
-        pulsemaps = [pulsemaps]
-
-    if selection is None:
-        # If no selection is provided, use all events in dataset.
-        dataset: Dataset
-        if db.endswith(".db"):
-            dataset = freedom_SQLiteDataset(
-                path=db,
-                graph_definition=graph_definition,
-                pulsemaps=pulsemaps,
-                features=features,
-                truth=truth,
-                truth_table=truth_table,
-                index_column=index_column,
-            )
-        elif db.endswith(".parquet"):
-            dataset = ParquetDataset(
-                path=db,
-                graph_definition=graph_definition,
-                pulsemaps=pulsemaps,
-                features=features,
-                truth=truth,
-                truth_table=truth_table,
-                index_column=index_column,
-            )
-        else:
-            raise RuntimeError(
-                f"File {db} with format {db.split('.'[-1])} not supported."
-            )
-        selection = dataset._get_all_indices()
-
-    # Perform train/validation split
-    if isinstance(db, list):
-        df_for_shuffle = pd.DataFrame(
-            {"event_no": selection, "db": database_indices}
-        )
-        shuffled_df = df_for_shuffle.sample(
-            frac=1, replace=False, random_state=rng
-        )
-        training_df, validation_df = train_test_split(
-            shuffled_df, test_size=test_size, random_state=seed
-        )
-        training_selection = training_df.values.tolist()
-        validation_selection = validation_df.values.tolist()
-    else:
-        training_selection, validation_selection = train_test_split(
-            selection, test_size=test_size, random_state=seed
-        )
-
-    # Create DataLoaders
-    common_kwargs = dict(
-        db=db,
-        pulsemaps=pulsemaps,
-        features=features,
-        truth=truth,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        persistent_workers=persistent_workers,
-        node_truth=node_truth,
-        truth_table=truth_table,
-        node_truth_table=node_truth_table,
-        string_selection=string_selection,
-        loss_weight_column=loss_weight_column,
-        loss_weight_table=loss_weight_table,
-        index_column=index_column,
-        labels=labels,
-        graph_definition=graph_definition,
-    )
-
-    training_dataloader = make_freedom_dataloader(
-        shuffle=True,
-        selection=training_selection,
-        **common_kwargs,  # type: ignore[arg-type]
-    )
-
-    validation_dataloader = make_freedom_dataloader(
-        shuffle=False,
-        selection=validation_selection,
-        **common_kwargs,  # type: ignore[arg-type]
-    )
-
-    return (
-        training_dataloader,
-        validation_dataloader,
-    )
-
-class LikelihoodFreeModel(StandardModel):
-    """Main class for standard models in graphnet.
-
-    This class chains together the different elements of a complete GNN- based
-    model (detector read-in, GNN backbone, and task-specific read-outs).
-    """
-
-    def __init__(
-        self,
-        *,
-        discriminator: Union[torch.nn.Module, Model],
-        scrambled_target: str,
-        graph_definition: GraphDefinition,
-        backbone: Model = None,
-        tasks: Union[StandardLearnedTask, List[StandardLearnedTask]],
-        optimizer_class: Type[torch.optim.Optimizer] = Adam,
-        optimizer_kwargs: Optional[Dict] = None,
-        scheduler_class: Optional[type] = None,
-        scheduler_kwargs: Optional[Dict] = None,
-        scheduler_config: Optional[Dict] = None,
-    ) -> None:
-        """Construct `LikelihoodFreeModel`."""
-        # Base class constructor
-
-        # Just one task
-        assert len(tasks) == 1
-
-        # Only works with binary classification
-        assert isinstance(tasks[0], freedom_BinaryClassificationTask)
-
-        # pass args
-        super().__init__(graph_definition = graph_definition,
-                         backbone=backbone,
-                         tasks = tasks,
-                         optimizer_class = optimizer_class,
-                         optimizer_kwargs = optimizer_kwargs,
-                         scheduler_class = scheduler_class,
-                         scheduler_kwargs = scheduler_kwargs,
-                         scheduler_config = scheduler_config)
-        
-        # discriminator
-        self._discriminator = discriminator
-
-        # grab name of scrambled target label e.g. direction
-        self._scrambled_target = scrambled_target
-
-
-    def forward(
-        self, data: Union[Data, List[Data]]
-    ) -> List[Union[Tensor, Data]]:
-        """Forward pass, chaining model components."""
-        if isinstance(data, Data):
-            data = [data]
-        x_list = []
-        y_scrambled_list = []
-        for d in data:
-            x = self.backbone(d)
-            x_list.append(x)
-            y_scrambled_list.append(d[self._scrambled_target])
-        x = torch.cat(x_list, dim=0)
-        y_scrambled = torch.cat(y_scrambled_list, dim = 0)
-
-        # Add scrambled target to inputs
-        x = torch.cat([x, y_scrambled], dim = 1)
-
-        # Pass both latent vec and scrambled target to discriminator
-        x = self._discriminator(x)
-
-        # Pass to task
-        preds = [task(x) for task in self._tasks]
-        return preds
-    
-    
-    def predict_skymap(self, data: Union[Data, List[Data]], nside = 8) -> List[Union[torch.Tensor, Data]]:
-        """Forward pass, chaining model components."""
-        self.inference()
-        self.train(mode=False)
-
-        if isinstance(data, Data):
-            data = [data]
-
-        truth_azimuth = []
-        truth_zenith = []
-                
-        npix = hp.nside2npix(nside)
-        directions = hp.pix2vec(nside, np.arange(npix))
-        directions = torch.tensor(directions).T  # Shape: (npix, 3)
-
-        zenith, azimuth = hp.pix2ang(nside,np.arange(npix))
-        
-
-        #NEED TO THINK ABOUT THIS MORE
-        zenith = np.pi/2 - zenith  # Convert colatitude to zenith angle
-
-        x_list = []
-        
-
-        for d in tqdm(data):
-            x = self.backbone(d)
-            truth_azimuth.extend(d['azimuth'].numpy())
-            truth_zenith.extend(d['zenith'].numpy())
-
-            for z in range(x.shape[0]):
-                x_list.extend(npix*[x[z]])
-        
-        
-        events_count = int(len(x_list)/npix)
-        y_list = [directions for _ in range(events_count)]
-        x = torch.stack(x_list)
-        y = torch.stack(y_list).reshape(len(x_list),3)
-
-        # Add scrambled target to inputs
-        x = torch.cat([x, y], dim=1).float()  # Shape: (num_events * npix, feature_dim + 3)
-        
-        # Pass both latent vec and scrambled target to discriminator
-        x = self._discriminator(x)
-
-        # Pass to task
-        task_preds = [task(x) for task in self._tasks]
-        events_count = len(data)
-        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
-        preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
-
-        return preds, azimuth, zenith, truth_azimuth, truth_zenith
-
-
-
-
-class ScrambledZenith(Label):
-    """."""
-
-    def __init__(
-        self,
-        key: str = "scrambled_zenith",
-        scramble_flag: str = 'scrambled_class',
-        zenith_key: str = 'zenith',
-    ):
-        """Construct `Direction`.
-
-        Args:
-            key: The name of the field in `Data` where the label will be
-                stored. That is, `graph[key] = label`.
-
-        """
-        # Base class constructor
-        super().__init__(key=key)
-        self._scramble_flag = scramble_flag
-        self._zenith_key = zenith_key
-        self.zenith = torch.rand((1,))*torch.pi 
-
-    def __call__(self, graph: Data) -> torch.tensor:
-        """Compute label for `graph`."""
-
-        # check that the flag is there
-        assert  self._scramble_flag in graph.keys()
-        assert graph[self._scramble_flag] is not None
-        
-        if graph[self._scramble_flag] == 1:
-            val = graph[self._zenith_key].unsqueeze(0)
-        else:
-            val = self.zenith
-            self.zenith = graph[self._zenith_key].unsqueeze(0)
-
-        return val
 
 class ScrambledDirection(Label):
     """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
@@ -1265,198 +988,50 @@ class ScrambledDirection(Label):
             self.direction = torch.cat((x, y, z), dim=1)
         return val
 
-class disc_NeuralNetwork(GNN):
-    def __init__(self, input_size, output_size, hidden_sizes=[16,32,64,32,16]):
-        super().__init__(input_size,output_size)
-        self.fc1 = nn.Linear(input_size, hidden_sizes[0])
-        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
-        self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
-        self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
-        self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
-        self.fc6 = nn.Linear(hidden_sizes[4], output_size)
 
-    def forward(self, data):
-        x = data
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        x = F.relu(self.fc5(x))
-        x = self.fc6(x)
-        return x
+path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
+pulsemap = 'InIcePulses'
+target = 'scrambled_class'
+truth_table = 'truth'
+gpus = [1]
+max_epochs = 30
+early_stopping_patience = 5
+batch_size = 500
+num_workers = 30
+wandb =  False
 
+features = FEATURES.ICECUBE86
+truth = TRUTH.ICECUBE86
 
-def main(
-    path: str,
-    pulsemap: str,
-    target: str,
-    truth_table: str,
-    gpus: Optional[List[int]],
-    max_epochs: int,
-    early_stopping_patience: int,
-    batch_size: int,
-    num_workers: int,
-    wandb: bool = False,
-) -> None:
-    """Run example."""
+graph_definition = KNNGraph(detector=IceCube86())
 
-    # Initialise Weights & Biases (W&B) run
-    if wandb:
-        # Make sure W&B output directory exists
-        wandb_dir = "./wandb/"
-        os.makedirs(wandb_dir, exist_ok=True)
-        wandb_logger = WandbLogger(
-            project="example-script",
-            entity="graphnet-team",
-            save_dir=wandb_dir,
-            log_model=True,
-        )
-
-        # Constants
-    features = FEATURES.ICECUBE86
-    truth = TRUTH.ICECUBE86
-
-    # Configuration
-    config: Dict[str, Any] = {
-        "path": path,
-        "pulsemap": pulsemap,
-        "batch_size": batch_size,
-        "num_workers": num_workers,
-        "target": target,
-        "early_stopping_patience": early_stopping_patience,
-        "fit": {
-            "gpus": gpus,
-            "max_epochs": max_epochs,
-        },
-    }
-
-    archive = os.path.join(EXAMPLE_OUTPUT_DIR, "train_model_without_configs")
-    run_name = "dynedge_{}_example".format(config["target"])
-    if wandb:
-        # Log configuration to W&B
-        wandb_logger.experiment.config.update(config)
-
-    # Define graph representation
-    graph_definition = KNNGraph(detector=IceCube86())
-
-    # add your labels
-
-    labels = {'scrambled_direction': ScrambledDirection(
+labels = {'scrambled_direction': ScrambledDirection(
         zenith_key='zenith',azimuth_key='azimuth'
         )
     }
 
-    (
-        training_dataloader,
-        validation_dataloader,
-    ) = make_train_validation_dataloader(
-        db=config["path"],
-        graph_definition=graph_definition,
-        pulsemaps=config["pulsemap"],
-        features=features,
-        truth=truth,
-        batch_size=config["batch_size"],
-        num_workers=config["num_workers"],
-        truth_table=truth_table,
-        labels= labels,
-        selection= None, #either None, str, or List[(event_no,scramble_class)]
-    )
-    
+model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
 
-    backbone = DynEdge(
-        nb_inputs=graph_definition.nb_outputs,
-        global_pooling_schemes=["min", "max", "mean", "sum"],
-    )
-    task = freedom_BinaryClassificationTask(
-        hidden_size=1,
-        target_labels=config["target"],
-        loss_function= BinaryCrossEntropyLoss(),
-    )
-    discriminator = disc_NeuralNetwork(backbone.nb_outputs+3, 1)
+diagnostics_dataloader = make_freedom_dataloader(db=path,
+    graph_definition=graph_definition,
+    pulsemaps=pulsemap,
+    features=features,
+    truth=truth,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    truth_table=truth_table,
+    labels= labels,
+    selection= None, #either None, str, or List[(event_no,scramble_class)]
+    no_of_events = None,
+    shuffle = False,
+    seed = 6
+)
 
-    model = LikelihoodFreeModel(
-        graph_definition=graph_definition,
-        backbone=backbone,
-        discriminator=discriminator,
-        scrambled_target="scrambled_direction",
-        tasks=[task],
-        optimizer_class=Adam,
-        optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
-        scheduler_class=PiecewiseLinearLR,
-        scheduler_kwargs={
-            "milestones": [
-                0,
-                len(training_dataloader) / 2,
-                len(training_dataloader) * config["fit"]["max_epochs"],
-            ],
-            "factors": [1e-2, 1, 1e-02],
-        },
-        scheduler_config={
-            "interval": "step",
-        },
-    )
+results = model.predict_as_dataframe(
+    diagnostics_dataloader,
+    additional_attributes=['scrambled_class'],
+    gpus=[0],
+)
 
-    #Training model
-    model.fit(
-        training_dataloader,
-        validation_dataloader,
-        early_stopping_patience=config["early_stopping_patience"],
-        logger=wandb_logger if wandb else None,
-        **config["fit"],
-    )
+results.to_pickle('diagnostics.pkl')
 
-    # Get predictions
-    additional_attributes = model.target_labels
-    assert isinstance(additional_attributes, list)  # mypy
-    
-
-    results = model.predict_as_dataframe(
-        validation_dataloader,
-        additional_attributes=additional_attributes + ["event_no"],
-        gpus=config["fit"]["gpus"],
-    )
-
-    # Save predictions and model to file
-    db_name = path.split("/")[-1].split(".")[0]
-    path = os.path.join(archive, db_name, run_name)
-    os.makedirs(path, exist_ok=True)
-
-    # Save results as .csv
-    results.to_csv(f"{path}/results.csv")
-
-    # Save full model (including weights) to .pth file - not version safe
-    # Note: Models saved as .pth files in one version of graphnet
-    #       may not be compatible with a different version of graphnet.
-    model.save(f"{path}/model.pth")
-
-    # Save model config and state dict - Version safe save method.
-    # This method of saving models is the safest way.
-    model.save_state_dict(f"{path}/state_dict.pth")
-    #model.save_config(f"{path}/model_config.yml")
-
-if __name__ == "__main__":
-
-    # settings
-    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    pulsemap = 'InIcePulses'
-    target = 'scrambled_class'
-    truth_table = 'truth'
-    gpus = [0]
-    max_epochs = 30
-    early_stopping_patience = 5
-    batch_size = 500
-    num_workers = 30
-    wandb =  False
-
-    main(
-            path=path,
-            pulsemap = pulsemap,
-            target = target,
-            truth_table = truth_table,
-            gpus = gpus,
-            max_epochs = max_epochs,
-            early_stopping_patience = early_stopping_patience,
-            batch_size = batch_size,
-            num_workers = num_workers,
-            wandb = wandb,
-        )
