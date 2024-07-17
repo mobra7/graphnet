@@ -45,6 +45,8 @@ from graphnet.utilities.config import (Configurable, DatasetConfig,
                                        DatasetConfigSaverABCMeta)
 from graphnet.utilities.logging import Logger
 
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
+
 class freedom_Dataset(
     Logger,
     Configurable,
@@ -735,7 +737,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 raise e
         return result, scramble_class
 
-    def _get_all_indices(self, return_type: str = 'both') -> List[tuple]:
+    def _get_all_indices(self, return_type: str = 'unscrambled') -> List[tuple]:
 
         print('getting all indices')
         self._establish_connection(0)
@@ -748,8 +750,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         conn = sqlite3.connect(self._path)
         query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 150
-        max_count = 300
+        min_count = 1
+        max_count = 1000
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
         
         
@@ -1010,7 +1012,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
+model = Model.load('/scratch/users/mbranden/graphnet/playground/plots_07_16/model_07_16.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1037,6 +1039,8 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
 
     truth_azimuth = []
     truth_zenith = []
+    truth_energy = []
+    event_nos = []
 
     zenith = np.linspace(0, np.pi, 100)
     azimuth = np.linspace(0, 2 * np.pi, 100)
@@ -1053,11 +1057,19 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
 
     max_log = []
 
+    max_ze = []
+    max_az = []
+    
+
     for d in tqdm(data):
         x_list = []
+        fine_ze_all = np.empty(shape=0)
+        fine_az_all = np.empty(shape=0)
         bb = model.backbone(d)
         truth_azimuth.extend(d['azimuth'].numpy())
         truth_zenith.extend(d['zenith'].numpy())
+        truth_energy.extend(d['energy'].numpy())
+        event_nos.extend(d['event_no'].numpy())
 
         for z in range(bb.shape[0]):
             x_list.extend(npix * [bb[z]])
@@ -1081,19 +1093,18 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
         
         fine_x_all = torch.empty((0,dims[1]))
         for i in range(len(preds)):
-            #log_skymap = np.log(preds[i])
-            #max_log_skymap = np.max(log_skymap)
-            #max_log.extend([max_log_skymap])
-            
+
             # Find the best prediction direction
             best_pred_idx = np.argmax(preds[i])
-            best_zenith = zenith[best_pred_idx // 100]
-            best_azimuth = azimuth[best_pred_idx % 100]
+            best_zenith = zenith[best_pred_idx]
+            best_azimuth = azimuth[best_pred_idx]
             
             # Create a finer grid around the best prediction direction
             fine_zenith = np.linspace(best_zenith - 0.25, best_zenith + 0.25, 200)
             fine_azimuth = np.linspace(best_azimuth - 0.25, best_azimuth + 0.25, 200)
             fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
+            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
+            fine_az_all = np.append(fine_az_all, fine_az.flatten())
             fine_zenith = torch.tensor(fine_ze.flatten())
             fine_azimuth = torch.tensor(fine_az.flatten())
 
@@ -1126,6 +1137,9 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             fine_log_skymap = np.log(fine_preds[j])
             fine_max_log_skymap = np.max(fine_log_skymap)
             max_log.extend([fine_max_log_skymap])
+            max_id = np.argmax(fine_log_skymap)
+            max_ze.append(fine_ze_all[j*len(fine_log_skymap)+max_id])
+            max_az.append(fine_az_all[j*len(fine_log_skymap)+max_id])
 
 
     # truth lh
@@ -1145,18 +1159,43 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
     truth_preds = [task(x) for task in model._tasks]
 
 
-    return max_log, truth_preds
+    return max_log, truth_preds, truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos
 
 
-max_log, truth_preds= coverage(model,skymap_dataloader)
+max_log, truth_preds,truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos = coverage(model,skymap_dataloader)
 truth_log = []
 
 for i in range(len(truth_preds[0])):
     truth_log.extend(np.log(truth_preds[0][i].detach().numpy()))
 
-
 delta_log = np.array(max_log) - np.array(truth_log)
 
-np.save('delta_log_finegrid.npy', delta_log)
+np.save('./plots_07_16/delta_log_finegrid.npy', delta_log)
 
 
+sqliteConnection = sqlite3.connect(path)
+cursor = sqliteConnection.cursor()
+event_numbers_str = ','.join(map(str, event_nos))
+query = f"SELECT * FROM spline_mpe_ic WHERE event_no IN ({event_numbers_str});"
+cursor.execute(query)
+spline_data = np.array(cursor.fetchall())
+spline_dict = {row[1]: row for row in spline_data}  
+
+spline_ordered = [spline_dict[event_no] for event_no in event_nos]
+spline_ordered_np = np.array(spline_ordered)
+spline_az = spline_ordered_np[:, 0]
+spline_ze = spline_ordered_np[:, 2]
+
+
+data = {
+    'max_llh_ze': max_ze,
+    'max_llh_az': max_az,
+    'spline_ze' : spline_ze,
+    'spline_az' : spline_az,
+    'truth_ze'  : truth_zenith,
+    'truth_az'  : truth_azimuth,
+    'energy'    : truth_energy,
+}
+
+df = pd.DataFrame(data)
+df.to_pickle('./plots_07_16/performance.pkl')

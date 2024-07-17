@@ -1129,7 +1129,7 @@ min_val = np.min(masked_log_skymap)
 max_val = np.max(masked_log_skymap)
 
 # Plot the masked skymap with the adjusted colormap scale
-cax = ax.pcolormesh(azimuth - np.pi, -zenith + np.pi / 2, delta_log_skymap,
+cax = ax.pcolormesh(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap,
                     cmap=cm.viridis, shading='gouraud', vmin=min_val, vmax=max_val)
 
 # Add colorbar
@@ -1137,13 +1137,13 @@ cb = fig.colorbar(cax, orientation='horizontal')
 cb.set_label(r'$\Delta$log-likelihood')
 
 # Plot the truth position and max likelihood position
-ax.plot(truth_azimuth[0] - np.pi, -truth_zenith[0] + np.pi / 2, 'rx', markersize=10, label='Truth')
-ax.plot(spline_az - np.pi, -spline_ze + np.pi / 2, 'gx', markersize=10, label='spline mpe')
-ax.plot(azimuth.flatten()[max_likelihood_idx] - np.pi, -zenith.flatten()[max_likelihood_idx] + np.pi / 2, 'bx', markersize=10, label='Max Likelihood')
+ax.plot(np.degrees(truth_azimuth[0] - np.pi), np.degrees(-truth_zenith[0] + np.pi / 2), 'rx', markersize=10, label='Truth')
+ax.plot(np.degrees(spline_az - np.pi),np.degrees(-spline_ze + np.pi / 2), 'gx', markersize=10, label='spline mpe')
+ax.plot(np.degrees(azimuth.flatten()[max_likelihood_idx] - np.pi), np.degrees(-zenith.flatten()[max_likelihood_idx] + np.pi / 2), 'bx', markersize=10, label='Max Likelihood')
 
 # Add a contour line
 clevel = -2.305
-cs = ax.contour(azimuth - np.pi, -zenith + np.pi / 2, delta_log_skymap, levels=[clevel], linewidths=1, linestyles='solid')
+cs = ax.contour(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap, levels=[clevel], linewidths=1, linestyles='solid')
 # print(cs.levels)
 # fmt = {}
 # strs = ['90 %']
@@ -1154,17 +1154,17 @@ cs = ax.contour(azimuth - np.pi, -zenith + np.pi / 2, delta_log_skymap, levels=[
 cs.collections[0].set_label(f'90% contour')
 
 # Set the axis limits to zoom in
-ax.set_xlim(azimuth_min - np.pi, azimuth_max - np.pi)
-ax.set_ylim(-zenith_max + np.pi / 2, -zenith_min + np.pi / 2)
+ax.set_xlim(np.degrees(azimuth_min - np.pi), np.degrees(azimuth_max - np.pi))
+ax.set_ylim(np.degrees(-zenith_max + np.pi / 2), np.degrees(-zenith_min + np.pi / 2))
 
 # Add grid, labels, and legend
 ax.grid(True)
-ax.set_xlabel('Azimuth [rad]')
-ax.set_ylabel('Zenith [rad]')
+ax.set_xlabel('Azimuth [deg]')
+ax.set_ylabel('Zenith [deg]')
 ax.legend()
 
 # Adjust layout and save the figure
 plt.tight_layout()
-plt.savefig('./plots/delta_llh_skymap_zoomed_1.pdf')
+plt.savefig('./plots_30_6/delta_llh_skymap_zoomed_1.pdf')
 plt.show()
 plt.close()

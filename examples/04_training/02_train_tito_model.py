@@ -218,8 +218,8 @@ Train GNN model without the use of config files.
 
     parser.with_standard_arguments(
         "gpus",
-        ("max-epochs", 1),
-        ("early-stopping-patience", 2),
+        ("max-epochs", 100),
+        ("early-stopping-patience", 5),
         ("batch-size", 16),
         "num-workers",
     )
@@ -237,7 +237,7 @@ Train GNN model without the use of config files.
         args.pulsemap,
         args.target,
         args.truth_table,
-        [1],
+        [0],
         args.max_epochs,
         args.early_stopping_patience,
         args.batch_size,

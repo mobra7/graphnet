@@ -19,9 +19,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.optim.adam import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.data import Data
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 from sklearn.model_selection import train_test_split
 
 from graphnet.constants import EXAMPLE_DATA_DIR, EXAMPLE_OUTPUT_DIR, GRAPHNET_ROOT_DIR
@@ -39,12 +41,15 @@ from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import freedom_BinaryClassificationTask
 from graphnet.training.callbacks import PiecewiseLinearLR
+
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
 from graphnet.training.utils import collate_fn
 from graphnet.utilities.config import (Configurable, DatasetConfig,
                                        DatasetConfigSaverABCMeta)
 from graphnet.utilities.logging import Logger
+
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
 
 
 
@@ -751,8 +756,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         conn = sqlite3.connect(self._path)
         query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 150
-        max_count = 300
+        min_count = 1
+        max_count = 1000
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
         print('done')
         return [(num, 0) for num in indices] + [(num, 1) for num in indices]
@@ -1266,14 +1271,15 @@ class ScrambledDirection(Label):
         return val
 
 class disc_NeuralNetwork(GNN):
-    def __init__(self, input_size, output_size, hidden_sizes=[16,32,64,32,16]):
+    def __init__(self, input_size, output_size, hidden_sizes=[180,120,60,32,16,8]):
         super().__init__(input_size,output_size)
         self.fc1 = nn.Linear(input_size, hidden_sizes[0])
         self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
         self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
         self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
         self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
-        self.fc6 = nn.Linear(hidden_sizes[4], output_size)
+        self.fc6 = nn.Linear(hidden_sizes[4], hidden_sizes[5])
+        self.fc7 = nn.Linear(hidden_sizes[5], output_size)
 
     def forward(self, data):
         x = data
@@ -1282,7 +1288,8 @@ class disc_NeuralNetwork(GNN):
         x = F.relu(self.fc3(x))
         x = F.relu(self.fc4(x))
         x = F.relu(self.fc5(x))
-        x = self.fc6(x)
+        x = F.relu(self.fc6(x))
+        x = self.fc7(x)
         return x
 
 
@@ -1362,17 +1369,19 @@ def main(
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
     
+    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline/model.pth')
 
-    backbone = DynEdge(
-        nb_inputs=graph_definition.nb_outputs,
-        global_pooling_schemes=["min", "max", "mean", "sum"],
-    )
+    backbone = pretrained_dynedge.backbone
+    for param in backbone.parameters():
+        param.requires_grad = False
+    
     task = freedom_BinaryClassificationTask(
         hidden_size=1,
         target_labels=config["target"],
         loss_function= BinaryCrossEntropyLoss(),
     )
     discriminator = disc_NeuralNetwork(backbone.nb_outputs+3, 1)
+    print(backbone.nb_outputs+3)
 
     model = LikelihoodFreeModel(
         graph_definition=graph_definition,
@@ -1382,18 +1391,9 @@ def main(
         tasks=[task],
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
-        scheduler_class=PiecewiseLinearLR,
-        scheduler_kwargs={
-            "milestones": [
-                0,
-                len(training_dataloader) / 2,
-                len(training_dataloader) * config["fit"]["max_epochs"],
-            ],
-            "factors": [1e-2, 1, 1e-02],
-        },
-        scheduler_config={
-            "interval": "step",
-        },
+        scheduler_class=ReduceLROnPlateau,
+        scheduler_kwargs={'patience': 4},
+        scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
     #Training model
@@ -1402,6 +1402,7 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
+        #ckpt_path = './lightning_logs/version_50/checkpoints/DynEdge-epoch=36-val_loss=0.04-train_loss=0.04.ckpt',
         **config["fit"],
     )
 
@@ -1442,8 +1443,8 @@ if __name__ == "__main__":
     target = 'scrambled_class'
     truth_table = 'truth'
     gpus = [0]
-    max_epochs = 30
-    early_stopping_patience = 5
+    max_epochs = 150
+    early_stopping_patience = 10
     batch_size = 500
     num_workers = 30
     wandb =  False

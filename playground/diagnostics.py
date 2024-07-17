@@ -1010,7 +1010,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
+model = Model.load('/scratch/users/mbranden/graphnet/playground/plots_07_16/model_07_16.pth')
 
 diagnostics_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1033,5 +1033,5 @@ results = model.predict_as_dataframe(
     gpus=[0],
 )
 
-results.to_pickle('diagnostics.pkl')
+results.to_pickle('./plots_07_16/diagnostics.pkl')
 

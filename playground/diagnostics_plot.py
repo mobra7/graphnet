@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-df = pd.read_pickle('diagnostics.pkl')
+df = pd.read_pickle('./plots_07_16/diagnostics.pkl')
 df['target_pred'] = 1/(1+np.exp(-np.log(df['target_pred'])))
 
 
@@ -14,7 +14,7 @@ plt.xlim(0,1)
 plt.xlabel('Prediction')
 
 plt.tight_layout()
-plt.savefig('./plots/diagnostics1.pdf')
+plt.savefig('./plots_07_16/diagnostics1.pdf')
 plt.show()
 plt.close()
 
@@ -23,8 +23,10 @@ plt.xlim(0,1)
 plt.xlabel('Prediction')
 plt.plot(np.linspace(0,1,2), np.linspace(0,1,2), 'r--', label='y=x')
 plt.grid()
+plt.text(.01, .99, r'p(x)p($\theta$)', ha='left', va='top', transform=plt.gca().transAxes)
+plt.text(.99, .01, r'p(x|$\theta$)', ha='right', va='bottom', transform=plt.gca().transAxes)
 
 plt.tight_layout()
-plt.savefig('./plots/diagnostics2.pdf')
+plt.savefig('./plots_07_16/diagnostics2.pdf')
 plt.show()
 plt.close()

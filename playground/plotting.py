@@ -6,6 +6,8 @@ from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
 
+import healpy as hp
+from healpy.newvisufunc import projview, newprojplot
 import math
 import numpy as np
 import pandas as pd
@@ -746,8 +748,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         conn = sqlite3.connect(self._path)
         query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 1
-        max_count = 200
+        min_count = 150
+        max_count = 300
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
         print('done')
         return [(num, 0) for num in indices] + [(num, 1) for num in indices]
@@ -856,6 +858,7 @@ def make_freedom_dataloader(
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
     no_of_events: Optional[int] = None,
+    seed = 1,
 ) -> DataLoader:
     """Construct `DataLoader` instance."""
     # Check(s)
@@ -879,6 +882,7 @@ def make_freedom_dataloader(
     )
     if no_of_events is not None:
         selection = dataset._get_all_indices()
+        random.seed(seed)
         selection = random.sample(selection, no_of_events)
         dataset = freedom_SQLiteDataset(
             path=db,
@@ -977,7 +981,7 @@ class ScrambledDirection(Label):
         return val
 
 
-path = "/mnt/scratch/rasmus_orsoe/databases/dev_northern_tracks_muon_labels_v3/dev_northern_tracks_muon_labels_v3_part_1.db"
+path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
 pulsemap = 'InIcePulses'
 target = 'scrambled_class'
 truth_table = 'truth'
@@ -998,7 +1002,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/home/moritz/MA/graphnet/data/examples/output/train_model_without_configs/freedom_normaldist_training/dynedge_scrambled_class_example/model.pth')
+model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1010,41 +1014,115 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     truth_table=truth_table,
     labels= labels,
     selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 3,
+    no_of_events = 1,
     shuffle = True,
+    seed = 5
 )
 
-skymap, azimuth, zenith, truth_azimuth, truth_zenith = model.predict_skymap(skymap_dataloader)
-print(len(skymap))
-print(len(skymap[0]))
-print('max lr', max(skymap[0]))
-print('max lr azimuth', azimuth[np.argmax(skymap[0])])
-print('max lr zenith', zenith[np.argmax(skymap[0])])
-#print(azimuth)
-print(truth_azimuth)
-print(truth_zenith)
+skymap, azimuth, zenith, truth_azimuth, truth_zenith = model.predict_skymap(skymap_dataloader, nside = 32)
+
+print('max lr azimuth', azimuth[int(np.argmax(skymap[0].flatten())%len(azimuth))])
+print('max lr zenith', zenith[int(np.argmax(skymap[0].flatten())%len(azimuth))])
+print('max lr = ', max(skymap[0].flatten()))
+print('index =', np.argmax(skymap[0].flatten()))
+print(truth_azimuth,truth_zenith)
+
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from matplotlib import cm
+
+log_skymap = np.log(skymap[0].flatten())
+
+# Reshape the log_skymap to match the coordinate grid
+#log_skymap_grid = log_skymap.reshape((len(set(azimuth)), len(set(zenith))))
 
 # Mollweide projection
 fig = plt.figure(figsize=(10, 5))
 ax = fig.add_subplot(111, projection='mollweide')
+cax = ax.scatter(azimuth-np.pi, zenith , c=log_skymap, cmap=cm.jet)
+
+cb = fig.colorbar(cax, orientation='horizontal')
+cb.set_label('log-likelihood')
+
 ax.grid(True)
 
-# Plot the data
-sc = ax.scatter(azimuth, zenith, c=skymap[0]+skymap[1]+skymap[2], cmap='viridis')
-ax.scatter(truth_azimuth-math.pi, truth_zenith-math.pi/2,c='r',marker = 'x')
-ax.scatter(azimuth[np.argmax(skymap[0])]-math.pi, zenith[np.argmax(skymap[0])]-math.pi/2,c='w',marker = 'x')
-ax.scatter(azimuth[np.argmax(skymap[1])]-math.pi, zenith[np.argmax(skymap[1])]-math.pi/2,c='w',marker = 'x')
-ax.scatter(azimuth[np.argmax(skymap[2])]-math.pi, zenith[np.argmax(skymap[2])]-math.pi/2,c='w',marker = 'x')
+# Add labels
+ax.set_xlabel('azimuth')
+ax.set_ylabel('zenith')
 
-# Colorbar
-cbar = plt.colorbar(sc, orientation='horizontal')
-cbar.set_label('likelihood ratio')
+# Calculate truth and max likelihood points
+if truth_azimuth[0] > np.pi:
+    plot_truth_azimuth = truth_azimuth[0] - 2 * np.pi
+else:
+    plot_truth_azimuth = truth_azimuth[0]
 
-# Set title and labels
-plt.title('Mollweide Projection')
-ax.set_xlabel('Azimuth')
-ax.set_ylabel('Zenith')
-plt.savefig('./graphnet/playground/mollweide_plot.png')
+max_likelihood_idx = np.argmax(np.log(skymap[0].flatten()))
+if azimuth[max_likelihood_idx] > np.pi:
+    plot_best_azimuth = azimuth[max_likelihood_idx] - 2 * np.pi
+else:
+    plot_best_azimuth = azimuth[max_likelihood_idx]
+
+# Plot truth and maximum likelihood points
+ax.plot(plot_truth_azimuth-np.pi, -truth_zenith[0]+np.pi/2, 'rx', markersize=10, label='Truth')
+ax.plot(plot_best_azimuth-np.pi, zenith[max_likelihood_idx], 'bx', markersize=10, label='max Likelihood')
+
+# Add legend
+ax.legend()
+
+# Save and show plot
+plt.tight_layout()
+plt.savefig('./llh_skymap_1.pdf')
+plt.show()
 plt.close()
+
+# # Plot the skymap
+# # classic healpy mollweide projections plot with graticule and axis labels and vertical color bar
+# projview(
+#     np.log(skymap[0].flatten()),
+#     coord = 'e',
+#     graticule=True,
+#     graticule_labels=True,
+#     unit="log-likelihood",
+#     xlabel="azimuth",
+#     ylabel="zenith",
+#     cb_orientation="horizontal",
+#     projection_type="mollweide",
+# )
+
+
+# if truth_azimuth[0]>np.pi:
+#     plot_truth_azimuth = truth_azimuth[0]-2*np.pi
+# else:
+#     plot_truth_azimuth = truth_azimuth[0]
+
+# if azimuth[np.argmax(skymap[0].flatten())]>np.pi:
+#     plot_best_azimuth = azimuth[np.argmax(skymap[0].flatten())] - 2*np.pi
+# else:
+#     plot_best_azimuth = azimuth[np.argmax(skymap[0].flatten())]
+
+# # Plot truth and maximum likelihood points
+# newprojplot(phi=plot_truth_azimuth, theta=truth_zenith[0], marker="x", color="r", markersize=10, label= 'Truth')
+# newprojplot(phi=plot_best_azimuth, theta=-zenith[np.argmax(skymap[0].flatten())]+np.pi/2, marker="x", color="b", markersize=10, label= 'max Likelihood')
+# #newprojplot(theta=np.pi/3, phi=np.pi/3, marker="x", color="g", markersize=10, label= 'test')
+
+# # Add legend
+# plt.legend()
+# plt.tight_layout()
+
+# # Save and show plot
+# plt.savefig('./llh_skymap_1.pdf')
+# plt.show()
+# plt.close()
+
+# plt.figure()
+# hp.visufunc.gnomview(np.log(skymap[0].flatten()),rot=(np.degrees(plot_truth_azimuth),np.degrees(truth_zenith[0])),reso=50, xsize = 600, ysize = 600)
+# newprojplot(phi=plot_truth_azimuth, theta=truth_zenith[0], marker="x", color="r", markersize=10, label= 'Truth')
+# newprojplot(phi=plot_best_azimuth, theta=-zenith[np.argmax(skymap[0].flatten())]+np.pi/2, marker="x", color="b", markersize=10, label= 'max Likelihood')
+# plt.legend()
+# plt.tight_layout()
+
+# # Save and show plot
+# plt.savefig('./llh_zoomed_1.pdf')
+# plt.show()
+# plt.close()
