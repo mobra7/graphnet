@@ -2,7 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy
 
-delta_log = np.load('./plots_07_16/delta_log_finegrid.npy')
+path = './plots_07_16'
+delta_log = np.load(f'{path}/delta_log_finegrid.npy')
 percent_levels = [0.005,0.01,0.025,0.05,0.10,0.5,0.90,0.95,0.975,0.99,0.995]
 delta_log_levels = [0.0100,0.0201,0.0506,0.1026,0.2107,1.39,4.61,5.99,7.38,9.21,10.60]
 coverage = []
@@ -48,4 +49,4 @@ plt.grid(True)
 
 # Show the plot
 plt.show()
-plt.savefig('./plots_07_16/coverage.pdf')
+plt.savefig(f'{path}/coverage.pdf')

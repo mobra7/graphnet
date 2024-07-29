@@ -1012,7 +1012,8 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/playground/plots_07_16/model_07_16.pth')
+model_path = './plots_07_24'
+model = Model.load(f'{model_path}/model.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1100,8 +1101,8 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             best_azimuth = azimuth[best_pred_idx]
             
             # Create a finer grid around the best prediction direction
-            fine_zenith = np.linspace(best_zenith - 0.25, best_zenith + 0.25, 200)
-            fine_azimuth = np.linspace(best_azimuth - 0.25, best_azimuth + 0.25, 200)
+            fine_zenith = np.linspace(best_zenith - 0.1, best_zenith + 0.1, 150)
+            fine_azimuth = np.linspace(best_azimuth - 0.1, best_azimuth + 0.1, 150)
             fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
             fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
             fine_az_all = np.append(fine_az_all, fine_az.flatten())
@@ -1170,7 +1171,7 @@ for i in range(len(truth_preds[0])):
 
 delta_log = np.array(max_log) - np.array(truth_log)
 
-np.save('./plots_07_16/delta_log_finegrid.npy', delta_log)
+np.save(f'{model_path}/delta_log_finegrid.npy', delta_log)
 
 
 sqliteConnection = sqlite3.connect(path)
@@ -1195,7 +1196,11 @@ data = {
     'truth_ze'  : truth_zenith,
     'truth_az'  : truth_azimuth,
     'energy'    : truth_energy,
+    'event_no'  : event_nos,
 }
 
 df = pd.DataFrame(data)
-df.to_pickle('./plots_07_16/performance.pkl')
+df.to_pickle(f'{model_path}/performance.pkl')
+
+# performance_events = pd.DataFrame({'event_no': event_nos})
+# performance_events.to_pickle(f'{model_path}/performance_events.pkl')

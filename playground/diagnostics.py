@@ -1010,7 +1010,8 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/playground/plots_07_16/model_07_16.pth')
+model_path = './plots_07_23_1'
+model = Model.load(f'{model_path}/model.pth')
 
 diagnostics_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1033,5 +1034,5 @@ results = model.predict_as_dataframe(
     gpus=[0],
 )
 
-results.to_pickle('./plots_07_16/diagnostics.pkl')
+results.to_pickle(f'{model_path}/diagnostics.pkl')
 

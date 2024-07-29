@@ -2,7 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
-df = pd.read_pickle('./plots_07_16/performance.pkl')
+path = './plots_07_23_1'
+
+df = pd.read_pickle(f'{path}/performance.pkl')
 
 def angle(az_true, zen_true, az_pred, zen_pred):
 
@@ -70,6 +72,7 @@ def plot_percentiles(df, column, title, filename):
     plt.savefig(filename)
     plt.close()
 
-plot_percentiles(df, 'max-truth', 'Max LLH to Truth', './plots_07_16/max_llh_to_truth.pdf')
-plot_percentiles(df, 'max-spline', 'Max LLH to Spline', './plots_07_16/max_llh_to_spline.pdf')
-plot_percentiles(df, 'spline-truth', 'Spline to Truth', './plots_07_16/spline_to_truth.pdf')
+print(np.mean(df['max-truth']))
+plot_percentiles(df, 'max-truth', 'Max LLH to Truth', f'{path}/max_llh_to_truth.pdf')
+plot_percentiles(df, 'max-spline', 'Max LLH to Spline', f'{path}/max_llh_to_spline.pdf')
+plot_percentiles(df, 'spline-truth', 'Spline to Truth', f'{path}/spline_to_truth.pdf')

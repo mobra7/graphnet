@@ -1271,15 +1271,14 @@ class ScrambledDirection(Label):
         return val
 
 class disc_NeuralNetwork(GNN):
-    def __init__(self, input_size, output_size, hidden_sizes=[180,120,60,32,16,8]):
+    def __init__(self, input_size, output_size, hidden_sizes=[150,100,50,32,8]):
         super().__init__(input_size,output_size)
         self.fc1 = nn.Linear(input_size, hidden_sizes[0])
         self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
         self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
         self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
         self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
-        self.fc6 = nn.Linear(hidden_sizes[4], hidden_sizes[5])
-        self.fc7 = nn.Linear(hidden_sizes[5], output_size)
+        self.fc6 = nn.Linear(hidden_sizes[4], output_size)
 
     def forward(self, data):
         x = data
@@ -1288,13 +1287,13 @@ class disc_NeuralNetwork(GNN):
         x = F.relu(self.fc3(x))
         x = F.relu(self.fc4(x))
         x = F.relu(self.fc5(x))
-        x = F.relu(self.fc6(x))
-        x = self.fc7(x)
+        x = self.fc6(x)
         return x
 
 
 def main(
     path: str,
+    save_path: str,
     pulsemap: str,
     target: str,
     truth_table: str,
@@ -1307,14 +1306,15 @@ def main(
 ) -> None:
     """Run example."""
 
+    os.makedirs(save_path, exist_ok=True)
     # Initialise Weights & Biases (W&B) run
     if wandb:
         # Make sure W&B output directory exists
-        wandb_dir = "./wandb/"
+        wandb_dir = f"{save_path}/wandb/"
         os.makedirs(wandb_dir, exist_ok=True)
         wandb_logger = WandbLogger(
-            project="example-script",
-            entity="graphnet-team",
+            project="freedom",
+            entity="mobra-technical-university-of-munich",
             save_dir=wandb_dir,
             log_model=True,
         )
@@ -1372,9 +1372,12 @@ def main(
     pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline/model.pth')
 
     backbone = pretrained_dynedge.backbone
-    for param in backbone.parameters():
+    for i,param in enumerate(backbone.parameters()):
         param.requires_grad = False
-    
+        if i == len(list(backbone.parameters())) - 3:
+            break
+
+
     task = freedom_BinaryClassificationTask(
         hidden_size=1,
         target_labels=config["target"],
@@ -1392,7 +1395,7 @@ def main(
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 4},
+        scheduler_kwargs={'patience': 8, 'factor': 0.2},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
@@ -1402,7 +1405,7 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
-        #ckpt_path = './lightning_logs/version_50/checkpoints/DynEdge-epoch=36-val_loss=0.04-train_loss=0.04.ckpt',
+        # ckpt_path = '/scratch/users/mbranden/graphnet/playground/lightning_logs/version_78/checkpoints/DynEdge-epoch=145-val_loss=0.04-train_loss=0.04.ckpt',
         **config["fit"],
     )
 
@@ -1417,40 +1420,40 @@ def main(
         gpus=config["fit"]["gpus"],
     )
 
-    # Save predictions and model to file
-    db_name = path.split("/")[-1].split(".")[0]
-    path = os.path.join(archive, db_name, run_name)
-    os.makedirs(path, exist_ok=True)
+    
 
     # Save results as .csv
-    results.to_csv(f"{path}/results.csv")
+    results.to_csv(f"{save_path}/results.csv")
 
     # Save full model (including weights) to .pth file - not version safe
     # Note: Models saved as .pth files in one version of graphnet
     #       may not be compatible with a different version of graphnet.
-    model.save(f"{path}/model.pth")
+    model.save(f"{save_path}/model.pth")
 
     # Save model config and state dict - Version safe save method.
     # This method of saving models is the safest way.
-    model.save_state_dict(f"{path}/state_dict.pth")
-    #model.save_config(f"{path}/model_config.yml")
+    model.save_state_dict(f"{save_path}/state_dict.pth")
+    model.save_config(f"{save_path}/model_config.yml")
 
 if __name__ == "__main__":
 
     # settings
     path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
+    save_path = '/scratch/users/mbranden/graphnet/playground/plots_07_24'
+
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
     gpus = [0]
-    max_epochs = 150
-    early_stopping_patience = 10
+    max_epochs = 250
+    early_stopping_patience = 20
     batch_size = 500
     num_workers = 30
-    wandb =  False
+    wandb =  True
 
     main(
             path=path,
+            save_path = save_path,
             pulsemap = pulsemap,
             target = target,
             truth_table = truth_table,
