@@ -58,7 +58,7 @@ class SQLiteDataset(Dataset):
 
         # Query table
         assert index is not None
-        self._establish_connection(index)
+        self._establish_connection(sequential_index) # this is just a workaround for now I guess
         try:
             assert self._conn
             if sequential_index is None:

@@ -14,12 +14,12 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 
 
-model_path = './plots_07_23_1'
+model_path = './plots_08_07_2'
 freedom = pd.read_pickle(f'{model_path}/performance.pkl')
-dynedge_model = Model.load(f'./dynedge_baseline/model.pth')
+dynedge_model = Model.load(f'./dynedge_baseline_3/model.pth')
 
-selection = list(pd.read_pickle(f'{model_path}/performance_events.pkl')['event_no'])
-#selection = list(freedom['event_no'])
+#selection = list(pd.read_pickle(f'{model_path}/performance_events.pkl')['event_no'])
+selection = list(freedom['event_no'])
 
 path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
 pulsemap = 'InIcePulses'

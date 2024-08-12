@@ -94,19 +94,29 @@ def main(
     indices = pd.read_sql_query(
             f"SELECT event_no FROM {truth_table}", conn
         )
-    # Filter based on pulse count
     query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
     min_count = 1
     max_count = 1000
     selection = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
-    #selection = np.random.choice(selection, size = 10000 ,replace = False).tolist()
+    database_indices = len(selection)*[0]
+    
+    conn = sqlite3.connect("/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_3.db")
+    indices = pd.read_sql_query(
+            f"SELECT event_no FROM {truth_table}", conn
+        )
+    query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+
+    min_count = 1
+    max_count = 1000
+    selection.extend([event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()])
+    database_indices.extend((len(selection)-len(database_indices))*[1]) 
 
     (
         training_dataloader,
         validation_dataloader,
     ) = make_train_validation_dataloader(
-        db=config["path"],
+        db=[config["path"],"/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_3.db"],
         graph_definition=graph_definition,
         pulsemaps=config["pulsemap"],
         features=features,
@@ -115,6 +125,7 @@ def main(
         num_workers=config["num_workers"],
         truth_table=truth_table,
         selection=selection,
+        database_indices=database_indices,
         labels = {'direction': Direction()},
         test_size=0.1
     )
@@ -137,7 +148,7 @@ def main(
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-03, "eps": 1e-03},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 5, 'factor': 0.3},
+        scheduler_kwargs={'patience': 3, 'factor': 0.3},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
     #     scheduler_class=PiecewiseLinearLR,
@@ -161,6 +172,7 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
+        ckpt_path = '/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/wandb/dynedge_baseline/9u9fnk6l/checkpoints/DynEdge-epoch=52-val_loss=-2.64-train_loss=-2.65.ckpt',
         **config["fit"],
     )
 
@@ -197,14 +209,14 @@ def main(
 if __name__ == "__main__":
 
     # settings
-    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = "/scratch/users/mbranden/graphnet/playground/dynedge_baseline_2"
+    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"    
+    save_path = "/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3"
     pulsemap = 'InIcePulses'
     target = 'direction'
     truth_table = 'truth'
-    gpus = [2]
+    gpus = [1]
     max_epochs = 150
-    early_stopping_patience = 12
+    early_stopping_patience = 10
     batch_size = 500
     num_workers = 30
     wandb =  True

@@ -1012,7 +1012,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model_path = './plots_07_24'
+model_path = './plots_08_05'
 model = Model.load(f'{model_path}/model.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
@@ -1124,6 +1124,34 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             fine_x = torch.cat([fine_x, fine_y], dim=1).float()  # Shape: (num_events * fine_npix, feature_dim + 3)
             fine_x_all = torch.cat([fine_x_all,fine_x], dim=0)
 
+            # do same for small grid around truth
+            actual_zenith = d['zenith'].numpy()[i]
+            actual_azimuth = d['azimuth'].numpy()[i]
+            
+            # Create a finer grid around the actual truth direction
+            fine_zenith = np.linspace(actual_zenith - 0.05, actual_zenith + 0.05, 50)
+            fine_azimuth = np.linspace(actual_azimuth - 0.05, actual_azimuth + 0.05, 50)
+            fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
+            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
+            fine_az_all = np.append(fine_az_all, fine_az.flatten())
+            fine_zenith = torch.tensor(fine_ze.flatten())
+            fine_azimuth = torch.tensor(fine_az.flatten())
+
+            fine_x = torch.cos(fine_azimuth) * torch.sin(fine_zenith)
+            fine_y = torch.sin(fine_azimuth) * torch.sin(fine_zenith)
+            fine_z = torch.cos(fine_zenith)
+            fine_directions = torch.stack((fine_x, fine_y, fine_z), dim=1)
+
+            fine_npix = fine_directions.shape[0]
+
+            fine_x_list = fine_npix * [bb[i]]
+            fine_x = torch.stack(fine_x_list)
+            fine_y = torch.stack([fine_directions]).reshape(len(fine_x_list), 3)
+
+
+            fine_x = torch.cat([fine_x, fine_y], dim=1).float()  # Shape: (num_events * fine_npix, feature_dim + 3)
+            fine_x_all = torch.cat([fine_x_all,fine_x], dim=0)
+
 
         # Pass both latent vec and scrambled target to discriminator for finer grid
         fine_x = model._discriminator(fine_x_all)
@@ -1171,7 +1199,7 @@ for i in range(len(truth_preds[0])):
 
 delta_log = np.array(max_log) - np.array(truth_log)
 
-np.save(f'{model_path}/delta_log_finegrid.npy', delta_log)
+np.save(f'{model_path}/delta_log_finegrid_2.npy', delta_log)
 
 
 sqliteConnection = sqlite3.connect(path)
@@ -1200,7 +1228,7 @@ data = {
 }
 
 df = pd.DataFrame(data)
-df.to_pickle(f'{model_path}/performance.pkl')
+df.to_pickle(f'{model_path}/performance_2.pkl')
 
 # performance_events = pd.DataFrame({'event_no': event_nos})
 # performance_events.to_pickle(f'{model_path}/performance_events.pkl')

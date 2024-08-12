@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
+os.environ["CUDA_VISIBLE_DEVICES"]="2,3,1,0"
 from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
@@ -1271,23 +1271,33 @@ class ScrambledDirection(Label):
         return val
 
 class disc_NeuralNetwork(GNN):
-    def __init__(self, input_size, output_size, hidden_sizes=[150,100,50,32,8]):
+    def __init__(self, input_size, output_size, hidden_sizes=[150,250,400,400,250,150,100,64,32,8]):
         super().__init__(input_size,output_size)
         self.fc1 = nn.Linear(input_size, hidden_sizes[0])
         self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
         self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
         self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
         self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
-        self.fc6 = nn.Linear(hidden_sizes[4], output_size)
+        self.fc6 = nn.Linear(hidden_sizes[4], hidden_sizes[5])
+        self.fc7 = nn.Linear(hidden_sizes[5], hidden_sizes[6])
+        self.fc8 = nn.Linear(hidden_sizes[6], hidden_sizes[7])
+        self.fc9 = nn.Linear(hidden_sizes[7], hidden_sizes[8])
+        self.fc10 = nn.Linear(hidden_sizes[8], hidden_sizes[9])
+        self.fc11 = nn.Linear(hidden_sizes[9], output_size)
 
     def forward(self, data):
         x = data
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        x = F.relu(self.fc5(x))
-        x = self.fc6(x)
+        x = F.leaky_relu(self.fc1(x))
+        x = F.leaky_relu(self.fc2(x))
+        x = F.leaky_relu(self.fc3(x))
+        x = F.leaky_relu(self.fc4(x))
+        x = F.leaky_relu(self.fc5(x))
+        x = F.leaky_relu(self.fc6(x))
+        x = F.leaky_relu(self.fc7(x))
+        x = F.leaky_relu(self.fc8(x))
+        x = F.leaky_relu(self.fc9(x))
+        x = F.leaky_relu(self.fc10(x))
+        x = self.fc11(x)
         return x
 
 
@@ -1307,6 +1317,7 @@ def main(
     """Run example."""
 
     os.makedirs(save_path, exist_ok=True)
+    os.makedirs(f'{save_path}/checkpoints/', exist_ok=True)
     # Initialise Weights & Biases (W&B) run
     if wandb:
         # Make sure W&B output directory exists
@@ -1369,7 +1380,7 @@ def main(
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
     
-    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline/model.pth')
+    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
 
     backbone = pretrained_dynedge.backbone
     for i,param in enumerate(backbone.parameters()):
@@ -1395,9 +1406,20 @@ def main(
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 8, 'factor': 0.2},
+        scheduler_kwargs={'patience': 3, 'factor': 0.1},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
+
+    # class CustomModelCheckpoint(ModelCheckpoint):
+    #     def __init__(self, save_epochs, *args, **kwargs):
+    #         super().__init__(*args, **kwargs)
+    #         self.save_epochs = save_epochs
+
+    #     def on_train_epoch_end(self, trainer, dirpath):
+    #         # Save the checkpoint if the current epoch is in the save_epochs list
+    #         if trainer.current_epoch in self.save_epochs:
+    #             self._save_checkpoint(trainer, dirpath)
+
 
     #Training model
     model.fit(
@@ -1405,6 +1427,23 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
+        callbacks= [ModelCheckpoint(
+                        save_top_k=5,
+                        mode = 'max',
+                        monitor = 'val_loss',
+                        every_n_epochs = 5,
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"{model.backbone.__class__.__name__}"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}"
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=1,
+                        monitor="val_loss",
+                        mode="min",
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"{model.backbone.__class__.__name__}"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
+                    )],
         # ckpt_path = '/scratch/users/mbranden/graphnet/playground/lightning_logs/version_78/checkpoints/DynEdge-epoch=145-val_loss=0.04-train_loss=0.04.ckpt',
         **config["fit"],
     )
@@ -1439,14 +1478,14 @@ if __name__ == "__main__":
 
     # settings
     path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/plots_07_24'
+    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_07_2'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
-    gpus = [0]
+    gpus = [1]
     max_epochs = 250
-    early_stopping_patience = 20
+    early_stopping_patience = 10
     batch_size = 500
     num_workers = 30
     wandb =  True
