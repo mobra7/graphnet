@@ -1,26 +1,29 @@
+"""Example of training Model."""
+
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
+os.environ["CUDA_VISIBLE_DEVICES"]="2,3,1,0"
 from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
 
-import healpy as hp
-from healpy.newvisufunc import projview, newprojplot
 import math
 import numpy as np
 import pandas as pd
 import random
 import sqlite3
+from scipy.linalg import null_space
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.optim.adam import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.data import Data
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.model_selection import train_test_split
 
 from graphnet.constants import EXAMPLE_DATA_DIR, EXAMPLE_OUTPUT_DIR, GRAPHNET_ROOT_DIR
@@ -37,16 +40,17 @@ from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import freedom_BinaryClassificationTask
-from graphnet.training.callbacks import PiecewiseLinearLR
+from graphnet.training.callbacks import PiecewiseLinearLR, ProgressBar
+
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
 from graphnet.training.utils import collate_fn
-from graphnet.utilities.config import (Configurable, DatasetConfig,
-                                       DatasetConfigSaverABCMeta)
+from graphnet.utilities.config import Configurable, DatasetConfig,DatasetConfigSaverABCMeta, ModelConfig
 from graphnet.utilities.logging import Logger
-from freedom import LikelihoodFreeModel, disc_NeuralNetwork
 
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
+
+
 
 class freedom_Dataset(
     Logger,
@@ -738,7 +742,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 raise e
         return result, scramble_class
 
-    def _get_all_indices(self, return_type: str = 'unscrambled') -> List[tuple]:
+    def _get_all_indices(self) -> List[tuple]:
 
         print('getting all indices')
         self._establish_connection(0)
@@ -754,14 +758,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         min_count = 1
         max_count = 1000
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
-        
-        
-        if return_type == 'scrambled':
-            return [(num, 0) for num in indices]
-        elif return_type == 'unscrambled':
-            return [(num, 1) for num in indices]
-        else:  # return_type == 'both'
-            return [(num, 0) for num in indices] + [(num, 1) for num in indices]
+        print('done')
+        return [(num, 0) for num in indices] + [(num, 1) for num in indices]
 
     def _get_event_index(
         self, sequential_index: Optional[int]
@@ -846,6 +844,9 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 self._conn = None
         return self
 
+
+"""let dataloader pick the new freedom dataset class"""
+
 def make_freedom_dataloader(
     db: str,
     pulsemaps: Union[str, List[str]],
@@ -867,13 +868,11 @@ def make_freedom_dataloader(
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
     no_of_events: Optional[int] = None,
-    seed = 1,
 ) -> DataLoader:
     """Construct `DataLoader` instance."""
     # Check(s)
     if isinstance(pulsemaps, str):
         pulsemaps = [pulsemaps]
-
 
     dataset = freedom_SQLiteDataset(
         path=db,
@@ -892,9 +891,7 @@ def make_freedom_dataloader(
     )
     if no_of_events is not None:
         selection = dataset._get_all_indices()
-        random.seed(seed)
         selection = random.sample(selection, no_of_events)
-        
         dataset = freedom_SQLiteDataset(
             path=db,
             pulsemaps=pulsemaps,
@@ -928,6 +925,287 @@ def make_freedom_dataloader(
     )
 
     return dataloader
+
+
+# @TODO: Remove in favour of DataLoader{,.from_dataset_config}
+def make_train_validation_dataloader(
+    db: str,
+    graph_definition: GraphDefinition,
+    selection: Optional[List[int]],
+    pulsemaps: Union[str, List[str]],
+    features: List[str],
+    truth: List[str],
+    *,
+    batch_size: int,
+    database_indices: Optional[List[int]] = None,
+    seed: int = 42,
+    test_size: float = 0.1,
+    num_workers: int = 10,
+    persistent_workers: bool = True,
+    node_truth: Optional[str] = None,
+    truth_table: str = "truth",
+    node_truth_table: Optional[str] = None,
+    string_selection: Optional[List[int]] = None,
+    loss_weight_column: Optional[str] = None,
+    loss_weight_table: Optional[str] = None,
+    index_column: str = "event_no",
+    labels: Optional[Dict[str, Callable]] = None,
+) -> Tuple[DataLoader, DataLoader]:
+    """Construct train and test `DataLoader` instances."""
+    # Reproducibility
+    rng = np.random.default_rng(seed=seed)
+    # Checks(s)
+    if isinstance(pulsemaps, str):
+        pulsemaps = [pulsemaps]
+
+    if selection is None:
+        # If no selection is provided, use all events in dataset.
+        dataset: Dataset
+        if db.endswith(".db"):
+            dataset = freedom_SQLiteDataset(
+                path=db,
+                graph_definition=graph_definition,
+                pulsemaps=pulsemaps,
+                features=features,
+                truth=truth,
+                truth_table=truth_table,
+                index_column=index_column,
+            )
+        elif db.endswith(".parquet"):
+            dataset = ParquetDataset(
+                path=db,
+                graph_definition=graph_definition,
+                pulsemaps=pulsemaps,
+                features=features,
+                truth=truth,
+                truth_table=truth_table,
+                index_column=index_column,
+            )
+        else:
+            raise RuntimeError(
+                f"File {db} with format {db.split('.'[-1])} not supported."
+            )
+        selection = dataset._get_all_indices()
+
+    # Perform train/validation split
+    if isinstance(db, list):
+        df_for_shuffle = pd.DataFrame(
+            {"event_no": selection, "db": database_indices}
+        )
+        shuffled_df = df_for_shuffle.sample(
+            frac=1, replace=False, random_state=rng
+        )
+        training_df, validation_df = train_test_split(
+            shuffled_df, test_size=test_size, random_state=seed
+        )
+        training_selection = training_df.values.tolist()
+        validation_selection = validation_df.values.tolist()
+    else:
+        training_selection, validation_selection = train_test_split(
+            selection, test_size=test_size, random_state=seed
+        )
+
+    # Create DataLoaders
+    common_kwargs = dict(
+        db=db,
+        pulsemaps=pulsemaps,
+        features=features,
+        truth=truth,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        persistent_workers=persistent_workers,
+        node_truth=node_truth,
+        truth_table=truth_table,
+        node_truth_table=node_truth_table,
+        string_selection=string_selection,
+        loss_weight_column=loss_weight_column,
+        loss_weight_table=loss_weight_table,
+        index_column=index_column,
+        labels=labels,
+        graph_definition=graph_definition,
+    )
+
+    training_dataloader = make_freedom_dataloader(
+        shuffle=True,
+        selection=training_selection,
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+
+    validation_dataloader = make_freedom_dataloader(
+        shuffle=False,
+        selection=validation_selection,
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+
+    return (
+        training_dataloader,
+        validation_dataloader,
+    )
+
+class LikelihoodFreeModel(StandardModel):
+    """Main class for standard models in graphnet.
+
+    This class chains together the different elements of a complete GNN- based
+    model (detector read-in, GNN backbone, and task-specific read-outs).
+    """
+
+    def __init__(
+        self,
+        *,
+        discriminator: Union[torch.nn.Module, Model],
+        scrambled_target: str,
+        graph_definition: GraphDefinition,
+        backbone: Model = None,
+        tasks: Union[StandardLearnedTask, List[StandardLearnedTask]],
+        optimizer_class: Type[torch.optim.Optimizer] = Adam,
+        optimizer_kwargs: Optional[Dict] = None,
+        scheduler_class: Optional[type] = None,
+        scheduler_kwargs: Optional[Dict] = None,
+        scheduler_config: Optional[Dict] = None,
+    ) -> None:
+        """Construct `LikelihoodFreeModel`."""
+        # Base class constructor
+
+        # Just one task
+        assert len(tasks) == 1
+
+        # Only works with binary classification
+        assert isinstance(tasks[0], freedom_BinaryClassificationTask)
+
+        # pass args
+        super().__init__(graph_definition = graph_definition,
+                         backbone=backbone,
+                         tasks = tasks,
+                         optimizer_class = optimizer_class,
+                         optimizer_kwargs = optimizer_kwargs,
+                         scheduler_class = scheduler_class,
+                         scheduler_kwargs = scheduler_kwargs,
+                         scheduler_config = scheduler_config)
+        
+        # discriminator
+        self._discriminator = discriminator
+
+        # grab name of scrambled target label e.g. direction
+        self._scrambled_target = scrambled_target
+
+
+    def forward(
+        self, data: Union[Data, List[Data]]
+    ) -> List[Union[Tensor, Data]]:
+        """Forward pass, chaining model components."""
+        if isinstance(data, Data):
+            data = [data]
+        x_list = []
+        y_scrambled_list = []
+        for d in data:
+            x = self.backbone(d)
+            x_list.append(x)
+            y_scrambled_list.append(d[self._scrambled_target])
+        x = torch.cat(x_list, dim=0)
+        y_scrambled = torch.cat(y_scrambled_list, dim = 0)
+
+        # Add scrambled target to inputs
+        x = torch.cat([x, y_scrambled], dim = 1)
+
+        # Pass both latent vec and scrambled target to discriminator
+        x = self._discriminator(x)
+
+        # Pass to task
+        preds = [task(x) for task in self._tasks]
+        return preds
+    
+    
+    def predict_skymap(self, data: Union[Data, List[Data]], nside = 8) -> List[Union[torch.Tensor, Data]]:
+        """Forward pass, chaining model components."""
+        self.inference()
+        self.train(mode=False)
+
+        if isinstance(data, Data):
+            data = [data]
+
+        truth_azimuth = []
+        truth_zenith = []
+                
+        npix = hp.nside2npix(nside)
+        directions = hp.pix2vec(nside, np.arange(npix))
+        directions = torch.tensor(directions).T  # Shape: (npix, 3)
+
+        zenith, azimuth = hp.pix2ang(nside,np.arange(npix))
+        
+
+        #NEED TO THINK ABOUT THIS MORE
+        zenith = np.pi/2 - zenith  # Convert colatitude to zenith angle
+
+        x_list = []
+        
+
+        for d in tqdm(data):
+            x = self.backbone(d)
+            truth_azimuth.extend(d['azimuth'].numpy())
+            truth_zenith.extend(d['zenith'].numpy())
+
+            for z in range(x.shape[0]):
+                x_list.extend(npix*[x[z]])
+        
+        
+        events_count = int(len(x_list)/npix)
+        y_list = [directions for _ in range(events_count)]
+        x = torch.stack(x_list)
+        y = torch.stack(y_list).reshape(len(x_list),3)
+
+        # Add scrambled target to inputs
+        x = torch.cat([x, y], dim=1).float()  # Shape: (num_events * npix, feature_dim + 3)
+        
+        # Pass both latent vec and scrambled target to discriminator
+        x = self._discriminator(x)
+
+        # Pass to task
+        task_preds = [task(x) for task in self._tasks]
+        events_count = len(data)
+        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
+        preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
+
+        return preds, azimuth, zenith, truth_azimuth, truth_zenith
+
+
+
+
+class ScrambledZenith(Label):
+    """."""
+
+    def __init__(
+        self,
+        key: str = "scrambled_zenith",
+        scramble_flag: str = 'scrambled_class',
+        zenith_key: str = 'zenith',
+    ):
+        """Construct `Direction`.
+
+        Args:
+            key: The name of the field in `Data` where the label will be
+                stored. That is, `graph[key] = label`.
+
+        """
+        # Base class constructor
+        super().__init__(key=key)
+        self._scramble_flag = scramble_flag
+        self._zenith_key = zenith_key
+        self.zenith = torch.rand((1,))*torch.pi 
+
+    def __call__(self, graph: Data) -> torch.tensor:
+        """Compute label for `graph`."""
+
+        # check that the flag is there
+        assert  self._scramble_flag in graph.keys()
+        assert graph[self._scramble_flag] is not None
+        
+        if graph[self._scramble_flag] == 1:
+            val = graph[self._zenith_key].unsqueeze(0)
+        else:
+            val = self.zenith
+            self.zenith = graph[self._zenith_key].unsqueeze(0)
+
+        return val
 
 class ScrambledDirection(Label):
     """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
@@ -990,253 +1268,617 @@ class ScrambledDirection(Label):
             val = self.direction
             self.direction = torch.cat((x, y, z), dim=1)
         return val
+    
+class UniformDirection(Label):
+    """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
+
+    def __init__(
+        self,
+        key: str = "scrambled_direction",
+        scramble_flag: str = 'scrambled_class',
+        azimuth_key: str = "azimuth",
+        zenith_key: str = "zenith",
+    ):
+        """Construct `Direction`.
+
+        Args:
+            key: The name of the field in `Data` where the label will be
+                stored. That is, `graph[key] = label`.
+            scramble_flag: The name of the pre-existing key in 'graph' which
+                determines whether the constructed 'Direction' will be shuffled.
+            azimuth_key: The name of the pre-existing key in `graph` that will
+                be used to access the azimuth angle, used when calculating
+                the direction.
+            zenith_key: The name of the pre-existing key in `graph` that will
+                be used to access the zenith angle, used when calculating the
+                direction.
+        """
+        print('creating scrambled direction label')
+        self._scramble_flag = scramble_flag
+        self._azimuth_key = azimuth_key
+        self._zenith_key = zenith_key
 
 
-path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
-pulsemap = 'InIcePulses'
-target = 'scrambled_class'
-truth_table = 'truth'
-gpus = []
-max_epochs = 30
-early_stopping_patience = 5
-batch_size = 100
-num_workers = 30
-wandb =  False
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print('GPU: ',torch.cuda.is_available())
-features = FEATURES.ICECUBE86
-truth = TRUTH.ICECUBE86
+        # Base class constructor
+        super().__init__(key=key)
 
-graph_definition = KNNGraph(detector=IceCube86())
+    def __call__(self, graph: Data) -> torch.tensor:
+        """Compute label for `graph`."""
 
-labels = {'scrambled_direction': ScrambledDirection(
-        zenith_key='zenith',azimuth_key='azimuth'
-        )
-    }
+        # check that the flag is there
+        assert  self._scramble_flag in graph.keys()
+        assert graph[self._scramble_flag] is not None
 
-model_path = './vMF_IS_09_11'
-model = Model.load(f'{model_path}/model.pth')
-# checkpoint_path = f'{model_path}/checkpoints/best-epoch=3-val_loss=0.03-train_loss=0.03.ckpt'
-# model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
+        x = torch.cos(graph[self._azimuth_key]) * torch.sin(
+            graph[self._zenith_key]
+        ).reshape(-1, 1)
+        y = torch.sin(graph[self._azimuth_key]) * torch.sin(
+            graph[self._zenith_key]
+        ).reshape(-1, 1)
+        z = torch.cos(graph[self._zenith_key]).reshape(-1, 1)
 
-skymap_dataloader = make_freedom_dataloader(db=path,
-    graph_definition=graph_definition,
-    pulsemaps=pulsemap,
-    features=features,
-    truth=truth,
-    batch_size=batch_size,
-    num_workers=num_workers,
-    truth_table=truth_table,
-    labels= labels,
-    selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 10000,
-    shuffle = False,
-    seed = 6
-)
+        if graph[self._scramble_flag] == 1:
+            val = torch.cat((x, y, z), dim=1)
+        else:
+            zenith = torch.acos(torch.rand((1,))*2-1)
+            azimuth = torch.rand((1,))*2*torch.pi
+            x = torch.cos(azimuth) * torch.sin(zenith).reshape(-1, 1)
+            y = torch.sin(azimuth) * torch.sin(zenith).reshape(-1, 1)
+            z = torch.cos(zenith).reshape(-1, 1)
+            val = torch.cat((x, y, z), dim=1)
+        return val
 
+class VMFDirection(Label):
+    """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
 
+    def __init__(
+        self,
+        key: str = "scrambled_direction",
+        scramble_flag: str = 'scrambled_class',
+        azimuth_key: str = "azimuth",
+        zenith_key: str = "zenith",
+        kappa: float = 1,
+    ):
+        """Construct `Direction`.
 
-def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, Data]]:
-    """Forward pass, chaining model components."""
-    model.inference()
-    model.train(mode=False)
-    model = model.to(device)
+        Args:
+            key: The name of the field in `Data` where the label will be
+                stored. That is, `graph[key] = label`.
+            scramble_flag: The name of the pre-existing key in 'graph' which
+                determines whether the constructed 'Direction' will be shuffled.
+            azimuth_key: The name of the pre-existing key in `graph` that will
+                be used to access the azimuth angle, used when calculating
+                the direction.
+            zenith_key: The name of the pre-existing key in `graph` that will
+                be used to access the zenith angle, used when calculating the
+                direction.
+            kappa: The concentration of the von Mises-Fisher distribution
+        """
+        print('creating scrambled direction label')
+        self._scramble_flag = scramble_flag
+        self._azimuth_key = azimuth_key
+        self._zenith_key = zenith_key
+        self.kappa = kappa
 
-    if isinstance(data, Data):
-        data = [data]
+        # Base class constructor
+        super().__init__(key=key)
 
-    truth_azimuth = []
-    truth_zenith = []
-    truth_energy = []
-    event_nos = []
+    def rand_uniform_hypersphere(self, N,p):
+    
+        """ 
+            rand_uniform_hypersphere(N,p)
+            =============================
 
-    zenith = np.linspace(0, np.pi, 75)
-    azimuth = np.linspace(0, 2 * np.pi, 75)
-    ze, az = np.meshgrid(zenith, azimuth)
-    zenith = torch.tensor(ze.flatten())
-    azimuth = torch.tensor(az.flatten())
+            Generate random samples from the uniform distribution on the (p-1)-dimensional 
+            hypersphere $\mathbb{S}^{p-1} \subset \mathbb{R}^{p}$. We use the method by 
+            Muller [1], see also Ref. [2] for other methods.
+            
+            INPUT:  
+            
+                * N (int) - Number of samples 
+                * p (int) - The dimension of the generated samples on the (p-1)-dimensional hypersphere.
+                    - p = 2 for the unit circle $\mathbb{S}^{1}$
+                    - p = 3 for the unit sphere $\mathbb{S}^{2}$
+                Note that the (p-1)-dimensional hypersphere $\mathbb{S}^{p-1} \subset \mathbb{R}^{p}$ and the 
+                samples are unit vectors in $\mathbb{R}^{p}$ that lie on the sphere $\mathbb{S}^{p-1}$.
 
-    x = torch.cos(azimuth) * torch.sin(zenith)
-    y = torch.sin(azimuth) * torch.sin(zenith)
-    z = torch.cos(zenith)
-    directions = torch.stack((x, y, z), dim=1).to(device)
+        References:
 
-    npix = directions.shape[0]
+        [1] Muller, M. E. "A Note on a Method for Generating Points Uniformly on N-Dimensional Spheres."
+        Comm. Assoc. Comput. Mach. 2, 19-20, Apr. 1959.
 
-    max_log = []
+        [2] https://mathworld.wolfram.com/SpherePointPicking.html
 
-    max_ze = []
-    max_az = []
+        """
+
+        if (p<=0) or (type(p) is not int):
+            raise Exception("p must be a positive integer.")
+
+        # Check N>0 and is an int
+        if (N<=0) or (type(N) is not int):
+            raise Exception("N must be a non-zero positive integer.")
+
+        v = np.random.normal(0,1,(N,p))
+
+        #    for i in range(N):
+        #        v[i,:] = v[i,:]/np.linalg.norm(v[i,:])
+            
+        v = np.divide(v,np.linalg.norm(v,axis=1,keepdims=True))
+
+        return v
+    
+    def rand_t_marginal(self, kappa,p,N=1):
+        """
+            rand_t_marginal(kappa,p,N=1)
+            ============================
+            
+            Samples the marginal distribution of t using rejection sampling of Wood [3]. 
+        
+            INPUT: 
+            
+                * kappa (float) - concentration        
+                * p (int) - The dimension of the generated samples on the (p-1)-dimensional hypersphere.
+                    - p = 2 for the unit circle $\mathbb{S}^{1}$
+                    - p = 3 for the unit sphere $\mathbb{S}^{2}$
+                Note that the (p-1)-dimensional hypersphere $\mathbb{S}^{p-1} \subset \mathbb{R}^{p}$ and the 
+                samples are unit vectors in $\mathbb{R}^{p}$ that lie on the sphere $\mathbb{S}^{p-1}$.
+                * N (int) - number of samples 
+            
+            OUTPUT: 
+            
+                * samples (array of floats of shape (N,1)) - samples of the marginal distribution of t
+        """
+        
+        # Check kappa >= 0 is numeric 
+        if (kappa < 0) or ((type(kappa) is not float) and (type(kappa) is not int)):
+            raise Exception("kappa must be a non-negative number.")
+            
+        if (p<=0) or (type(p) is not int):
+            raise Exception("p must be a positive integer.")
+        
+        # Check N>0 and is an int
+        if (N<=0) or (type(N) is not int):
+            raise Exception("N must be a non-zero positive integer.")
+        
+        
+        # Start of algorithm 
+        b = (p - 1.0) / (2.0 * kappa + np.sqrt(4.0 * kappa**2 + (p - 1.0)**2 ))    
+        x0 = (1.0 - b) / (1.0 + b)
+        c = kappa * x0 + (p - 1.0) * np.log(1.0 - x0**2)
+        
+        samples = np.zeros((N,1))
+        
+        # Loop over number of samples 
+        for i in range(N):
+            
+            # Continue unil you have an acceptable sample 
+            while True: 
+                
+                # Sample Beta distribution
+                Z = np.random.beta( (p - 1.0)/2.0, (p - 1.0)/2.0 )
+                
+                # Sample Uniform distribution
+                U = np.random.uniform(low=0.0,high=1.0)
+                
+                # W is essentially t
+                W = (1.0 - (1.0 + b) * Z) / (1.0 - (1.0 - b) * Z)
+                
+                # Check whether to accept or reject 
+                if kappa * W + (p - 1.0)*np.log(1.0 - x0*W) - c >= np.log(U):
+                    
+                    # Accept sample
+                    samples[i] = W
+                    break
+                            
+        return samples
+    
+    def rand_von_mises_fisher(self, mu,kappa,N=1):
+        """
+            rand_von_mises_fisher(mu,kappa,N=1)
+            ===================================
+            
+            Samples the von Mises-Fisher distribution with mean direction mu and concentration kappa. 
+            
+            INPUT: 
+            
+                * mu (array of floats of shape (p,1)) - mean direction. This should be a unit vector.
+                * kappa (float) - concentration. 
+                * N (int) - Number of samples. 
+            
+            OUTPUT: 
+            
+                * samples (array of floats of shape (N,p)) - samples of the von Mises-Fisher distribution
+                with mean direction mu and concentration kappa. 
+        """
+        
+        # Check that mu is a unit vector
+        eps = 10**(-5) # Precision 
+        norm_mu = np.linalg.norm(mu)
+        if abs(norm_mu - 1.0) > eps:
+            raise Exception(f"mu must be a unit vector. {norm_mu}, {mu}")
+            
+        # Check kappa >= 0 is numeric 
+        if (kappa < 0) or ((type(kappa) is not float) and (type(kappa) is not int)):
+            raise Exception("kappa must be a non-negative number.")
+        
+        # Check N>0 and is an int
+        if (N<=0) or (type(N) is not int):
+            raise Exception("N must be a non-zero positive integer.")
+        
+        # Dimension p
+        p = len(mu)
+        
+        # Make sure that mu has a shape of px1
+        mu = np.reshape(mu,(p,1))
+        
+        # Array to store samples 
+        samples = np.zeros((N,p))
+        
+        #  Component in the direction of mu (Nx1)
+        t = self.rand_t_marginal(kappa,p,N) 
+        
+        # Component orthogonal to mu (Nx(p-1))
+        xi = self.rand_uniform_hypersphere(N,p-1) 
+    
+        # von-Mises-Fisher samples Nxp
+        
+        # Component in the direction of mu (Nx1).
+        # Note that here we are choosing an 
+        # intermediate mu = [1, 0, 0, 0, ..., 0] later
+        # we rotate to the desired mu below
+        samples[:,[0]] = t 
+        
+        # Component orthogonal to mu (Nx(p-1))
+        samples[:,1:] = np.sqrt(1 - t**2) * xi
+        
+        # Rotation of samples to desired mu
+        O = null_space(mu.T)
+        R = np.concatenate((mu,O),axis=1)
+        samples = np.dot(R,samples.T).T
+        
+        return samples
     
 
-    for d in tqdm(data):
-        x_list = []
-        fine_ze_all = np.empty(shape=0)
-        fine_az_all = np.empty(shape=0)
-        bb = model.backbone(d.to(device)).to(device)
-        truth_azimuth.extend(d['azimuth'].cpu().numpy())
-        truth_zenith.extend(d['zenith'].cpu().numpy())
-        truth_energy.extend(d['energy'].cpu().numpy())
-        event_nos.extend(d['event_no'].cpu().numpy())
+    def __call__(self, graph: Data) -> torch.tensor:
+        """Compute label for `graph`."""
 
-        for z in range(bb.shape[0]):
-            x_list.extend(npix * [bb[z]])
+        # check that the flag is there
+        assert  self._scramble_flag in graph.keys()
+        assert graph[self._scramble_flag] is not None
 
-        events_count = int(len(x_list) / npix)
-        y_list = [directions] * events_count
-        x = torch.stack(x_list)
-        y = torch.stack(y_list).reshape(len(x_list), 3)
+        x = torch.cos(graph[self._azimuth_key]) * torch.sin(
+            graph[self._zenith_key]
+        ).reshape(-1, 1)
+        y = torch.sin(graph[self._azimuth_key]) * torch.sin(
+            graph[self._zenith_key]
+        ).reshape(-1, 1)
+        z = torch.cos(graph[self._zenith_key]).reshape(-1, 1)
 
-        # Add scrambled target to inputs
-        x = torch.cat([x, y], dim=1).float().to(device)  # Shape: (num_events * npix, feature_dim + 3)
-        dims = x.shape
-        y = []
+        val = torch.cat((x, y, z), dim=1)
 
-        # Pass both latent vec and scrambled target to discriminator
-        x = model._discriminator(x).to(device)
-
-        # Pass to task
-        task_preds = [task(x) for task in model._tasks]
-        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
-        preds = np.array([event_pred.detach().cpu().numpy() for event_pred in pred_chunk])
+        if graph[self._scramble_flag] == 0:
+            mu = val[0].numpy().flatten() 
+            mu = mu/ np.linalg.norm(mu)
+            val2 = self.rand_von_mises_fisher(mu, self.kappa).flatten()
+            val = torch.tensor(val2).unsqueeze(0)
         
-        fine_x_all = torch.empty((0,dims[1])).to(device)
-        for i in range(len(preds)):
-
-            # Find the best prediction direction
-            best_pred_idx = np.argmax(preds[i])
-            best_zenith = zenith[best_pred_idx]
-            best_azimuth = azimuth[best_pred_idx]
-            
-            # Create a finer grid around the best prediction direction
-            fine_zenith = np.linspace(best_zenith - 0.1, best_zenith + 0.1, 100)
-            fine_azimuth = np.linspace(best_azimuth - 0.1, best_azimuth + 0.1, 100)
-            fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
-            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
-            fine_az_all = np.append(fine_az_all, fine_az.flatten())
-            fine_zenith = torch.tensor(fine_ze.flatten())
-            fine_azimuth = torch.tensor(fine_az.flatten())
-
-            fine_x = torch.cos(fine_azimuth) * torch.sin(fine_zenith)
-            fine_y = torch.sin(fine_azimuth) * torch.sin(fine_zenith)
-            fine_z = torch.cos(fine_zenith)
-            fine_directions = torch.stack((fine_x, fine_y, fine_z), dim=1).to(device)
-
-            fine_npix = fine_directions.shape[0]
-
-            fine_x_list = fine_npix * [bb[i]]
-            fine_x = torch.stack(fine_x_list)
-            fine_y = torch.stack([fine_directions]).reshape(len(fine_x_list), 3)
-
-            # Add scrambled target to inputs for the finer grid
-            fine_x = torch.cat([fine_x, fine_y], dim=1).float().to(device)  # Shape: (num_events * fine_npix, feature_dim + 3)
-            fine_x_all = torch.cat([fine_x_all,fine_x], dim=0).to(device)
-
-            # do same for small grid around truth
-            actual_zenith = d['zenith'].cpu().numpy()[i]
-            actual_azimuth = d['azimuth'].cpu().numpy()[i]
-            
-            # Create a finer grid around the actual truth direction
-            fine_zenith = np.linspace(actual_zenith - 0.05, actual_zenith + 0.05, 50)
-            fine_azimuth = np.linspace(actual_azimuth - 0.05, actual_azimuth + 0.05, 50)
-            fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
-            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
-            fine_az_all = np.append(fine_az_all, fine_az.flatten())
-            fine_zenith = torch.tensor(fine_ze.flatten())
-            fine_azimuth = torch.tensor(fine_az.flatten())
-
-            fine_x = torch.cos(fine_azimuth) * torch.sin(fine_zenith)
-            fine_y = torch.sin(fine_azimuth) * torch.sin(fine_zenith)
-            fine_z = torch.cos(fine_zenith)
-            fine_directions = torch.stack((fine_x, fine_y, fine_z), dim=1)
-
-            fine_npix = fine_directions.shape[0]
-
-            fine_x_list = fine_npix * [bb[i]]
-            fine_x = torch.stack(fine_x_list)
-            fine_y = torch.stack([fine_directions]).reshape(len(fine_x_list), 3).to(device)
-
-
-            fine_x = torch.cat([fine_x, fine_y], dim=1).float().to(device)  # Shape: (num_events * fine_npix, feature_dim + 3)
-            fine_x_all = torch.cat([fine_x_all,fine_x], dim=0).to(device)
-
-
-        # Pass both latent vec and scrambled target to discriminator for finer grid
-        fine_x = model._discriminator(fine_x_all).to(device)
-
-        # Pass to task for finer grid
-        fine_task_preds = [task(fine_x) for task in model._tasks]
-        fine_pred_chunk = fine_task_preds[0].chunk(events_count)  # Only takes first task for now
-        fine_preds = np.array([event_pred.detach().cpu().numpy() for event_pred in fine_pred_chunk])
         
-        # Update max_log with finer predictions
-        for j in range(len(fine_preds)):
-            fine_log_skymap = np.log(fine_preds[j])
-            fine_max_log_skymap = np.max(fine_log_skymap)
-            max_log.extend([fine_max_log_skymap])
-            max_id = np.argmax(fine_log_skymap)
-            max_ze.append(fine_ze_all[j*len(fine_log_skymap)+max_id])
-            max_az.append(fine_az_all[j*len(fine_log_skymap)+max_id])
+        return val
+
+class importance(Label):
+    def __init__(
+        self,
+        key: str = "importance",
+        scrambled_key: str = "scrambled_direction",
+        scramble_flag: str = 'scrambled_class',
+        azimuth_key: str = "azimuth",
+        zenith_key: str = "zenith",
+        kappa: float = 1,
+    ):
+        """Construct `importance weights`.
+
+        Args:
+            key: The name of the field in `Data` where the label will be
+                stored. That is, `graph[key] = label`.
+            scrambled_key: The name of the pre-existing key in 'graph' which
+                gives the shuffled direction.
+            scramble_flag: The name of the pre-existing key in 'graph' which
+                determines whether the constructed 'Direction' will be shuffled.
+            azimuth_key: The name of the pre-existing key in `graph` that will
+                be used to access the azimuth angle, used when calculating
+                the direction.
+            zenith_key: The name of the pre-existing key in `graph` that will
+                be used to access the zenith angle, used when calculating the
+                direction.
+        """
+        print('creating scrambled direction label')
+        self._key = key
+        self._scrambled_key = scrambled_key
+        self._scramble_flag = scramble_flag
+        self._azimuth_key = azimuth_key
+        self._zenith_key = zenith_key
+        self.kappa = kappa
+
+        # Base class constructor
+        super().__init__(key=key)
+
+    def vmf_pdf_3d(self, x, mu, kappa):
+        """
+        Compute the PDF of the 3D von Mises-Fisher distribution.
+        
+        Args:
+        x (array-like): Point to evaluate (3D unit vector).
+        mu (array-like): Mean direction (3D unit vector).
+        kappa (float): Concentration parameter.
+        
+        Returns:
+        pdf_value (float): PDF value at x.
+        """
+        x = np.array(x) / np.linalg.norm(x)
+        mu = np.array(mu) / np.linalg.norm(mu)
+        
+        return kappa / (4 * np.pi * np.sinh(kappa)) * np.exp(kappa * np.dot(mu, x))
+    
+    def __call__(self, graph: Data) -> torch.tensor:
+        assert  self._scramble_flag in graph.keys()
+        assert graph[self._scramble_flag] is not None
+
+        val = torch.tensor(2*torch.pi).unsqueeze(0) #1/U
+
+        if graph[self._scramble_flag] == 0:
+            x = torch.cos(graph[self._azimuth_key]) * torch.sin(
+                graph[self._zenith_key]
+            ).reshape(-1, 1)
+            y = torch.sin(graph[self._azimuth_key]) * torch.sin(
+                graph[self._zenith_key]
+            ).reshape(-1, 1)
+            z = torch.cos(graph[self._zenith_key]).reshape(-1, 1)
+
+            mu = torch.cat((x, y, z), dim=1)
+            mu = mu[0].numpy().flatten() 
+            mu = mu/ np.linalg.norm(mu)
+
+            x = graph[self._scrambled_key]
+            x= x[0].numpy().flatten()
+            x = x/ np.linalg.norm(x)
+            val = torch.tensor(min(1/self.vmf_pdf_3d(x,mu,self.kappa),1000.)).unsqueeze(0) #1/Q
+        return val
 
 
-    # truth lh
-    truth_azimuth = torch.tensor(truth_azimuth)
-    truth_zenith = torch.tensor(truth_zenith)
-    truth_x = torch.cos(truth_azimuth) * torch.sin(truth_zenith)
-    truth_y = torch.sin(truth_azimuth) * torch.sin(truth_zenith)
-    truth_z = torch.cos(truth_zenith)
-    truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(device)
-    truth_x_list = []
-    for d in data:
-        x = model.backbone(d.to(device)).to(device)
-        truth_x_list.extend(x)
-    x = torch.stack(truth_x_list)
-    x = torch.cat([x,truth_directions],dim=1).float().to(device)
-    x = model._discriminator(x)
-    truth_preds = [task(x) for task in model._tasks]
 
 
-    return max_log, truth_preds, truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos
+
+class disc_NeuralNetwork(GNN):
+    def __init__(self, input_size, output_size, hidden_sizes=[150,250,400,400,250,150,100,64,32,8]):
+        super().__init__(input_size,output_size)
+        self.fc1 = nn.Linear(input_size, hidden_sizes[0])
+        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+        self.fc3 = nn.Linear(hidden_sizes[1], hidden_sizes[2])
+        self.fc4 = nn.Linear(hidden_sizes[2], hidden_sizes[3])
+        self.fc5 = nn.Linear(hidden_sizes[3], hidden_sizes[4])
+        self.fc6 = nn.Linear(hidden_sizes[4], hidden_sizes[5])
+        self.fc7 = nn.Linear(hidden_sizes[5], hidden_sizes[6])
+        self.fc8 = nn.Linear(hidden_sizes[6], hidden_sizes[7])
+        self.fc9 = nn.Linear(hidden_sizes[7], hidden_sizes[8])
+        self.fc10 = nn.Linear(hidden_sizes[8], hidden_sizes[9])
+        self.fc11 = nn.Linear(hidden_sizes[9], output_size)
+
+    def forward(self, data):
+        x = data.to(torch.float32)
+        x = F.leaky_relu(self.fc1(x))
+        x = F.leaky_relu(self.fc2(x))
+        x = F.leaky_relu(self.fc3(x))
+        x = F.leaky_relu(self.fc4(x))
+        x = F.leaky_relu(self.fc5(x))
+        x = F.leaky_relu(self.fc6(x))
+        x = F.leaky_relu(self.fc7(x))
+        x = F.leaky_relu(self.fc8(x))
+        x = F.leaky_relu(self.fc9(x))
+        x = F.leaky_relu(self.fc10(x))
+        x = self.fc11(x)
+        return x
 
 
-max_log, truth_preds,truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos = coverage(model,skymap_dataloader)
-truth_log = []
+def main(
+    path: str,
+    save_path: str,
+    pulsemap: str,
+    target: str,
+    truth_table: str,
+    gpus: Optional[List[int]],
+    max_epochs: int,
+    early_stopping_patience: int,
+    batch_size: int,
+    num_workers: int,
+    kappa: int,
+    wandb: bool = False,
+) -> None:
+    """Run example."""
 
-for i in range(len(truth_preds[0])):
-    truth_log.extend(np.log(truth_preds[0][i].detach().cpu().numpy()))
+    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(f'{save_path}/checkpoints/', exist_ok=True)
+    # Initialise Weights & Biases (W&B) run
+    if wandb:
+        # Make sure W&B output directory exists
+        wandb_dir = f"{save_path}/wandb/"
+        os.makedirs(wandb_dir, exist_ok=True)
+        wandb_logger = WandbLogger(
+            project="importance_sampling",
+            entity="mobra-technical-university-of-munich",
+            save_dir=wandb_dir,
+            log_model=True,
+        )
 
-delta_log = np.array(max_log) - np.array(truth_log)
+        # Constants
+    features = FEATURES.ICECUBE86
+    truth = TRUTH.ICECUBE86
 
-np.save(f'{model_path}/delta_log_finegrid.npy', delta_log)
+    # Configuration
+    config: Dict[str, Any] = {
+        "path": path,
+        "pulsemap": pulsemap,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "target": target,
+        "early_stopping_patience": early_stopping_patience,
+        "fit": {
+            "gpus": gpus,
+            "max_epochs": max_epochs,
+        },
+    }
+
+    archive = os.path.join(EXAMPLE_OUTPUT_DIR, "train_model_without_configs")
+    run_name = "dynedge_{}_example".format(config["target"])
+    if wandb:
+        # Log configuration to W&B
+        wandb_logger.experiment.config.update(config)
+
+    # Define graph representation
+    graph_definition = KNNGraph(detector=IceCube86())
+
+    # add your labels
+
+    labels = {'scrambled_direction': VMFDirection(
+        zenith_key='zenith',azimuth_key='azimuth', kappa= kappa
+        ), 
+        'importance': importance(
+        scrambled_key='scrambled_direction', zenith_key='zenith', azimuth_key='azimuth',kappa= kappa
+        )}
+
+    (
+        training_dataloader,
+        validation_dataloader,
+    ) = make_train_validation_dataloader(
+        db=config["path"],
+        graph_definition=graph_definition,
+        pulsemaps=config["pulsemap"],
+        features=features,
+        truth=truth,
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"],
+        truth_table=truth_table,
+        labels= labels,
+        selection= None, #either None, str, or List[(event_no,scramble_class)]
+    )
+    
+    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
+
+    backbone = pretrained_dynedge.backbone
+    for i,param in enumerate(backbone.parameters()):
+        param.requires_grad = False
+        if i == len(list(backbone.parameters())) - 3:
+            break
 
 
-sqliteConnection = sqlite3.connect(path)
-cursor = sqliteConnection.cursor()
-event_numbers_str = ','.join(map(str, event_nos))
-query = f"SELECT * FROM spline_mpe_ic WHERE event_no IN ({event_numbers_str});"
-cursor.execute(query)
-spline_data = np.array(cursor.fetchall())
-spline_dict = {row[1]: row for row in spline_data}  
+    task = freedom_BinaryClassificationTask(
+        hidden_size=1,
+        target_labels=config["target"],
+        loss_function= BinaryCrossEntropyLoss(),
+        loss_weight = 'importance'
+    )
+    discriminator = disc_NeuralNetwork(backbone.nb_outputs+3, 1)
+    
 
-spline_ordered = [spline_dict[event_no] for event_no in event_nos]
-spline_ordered_np = np.array(spline_ordered)
-spline_az = spline_ordered_np[:, 0]
-spline_ze = spline_ordered_np[:, 2]
+    model = LikelihoodFreeModel(
+        graph_definition=graph_definition,
+        backbone=backbone,
+        discriminator=discriminator,
+        scrambled_target="scrambled_direction",
+        tasks=[task],
+        optimizer_class=Adam,
+        optimizer_kwargs={"lr": 1e-06, "eps": 1e-3},
+        scheduler_class=ReduceLROnPlateau,
+        scheduler_kwargs={'patience': 3, 'factor': 0.1},
+        scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
+    )
+
+    model.load_state_dict('./plots_08_07_2/state_dict.pth')
 
 
-data = {
-    'max_llh_ze': max_ze,
-    'max_llh_az': max_az,
-    'spline_ze' : spline_ze,
-    'spline_az' : spline_az,
-    'truth_ze'  : truth_zenith,
-    'truth_az'  : truth_azimuth,
-    'energy'    : truth_energy,
-    'event_no'  : event_nos,
-}
+    #Training model
+    model.fit(
+        training_dataloader,
+        validation_dataloader,
+        early_stopping_patience=config["early_stopping_patience"],
+        logger=wandb_logger if wandb else None,
+        callbacks= [ProgressBar(),
+                    EarlyStopping(
+                    monitor="val_loss",
+                    patience=early_stopping_patience,
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=-1,
+                        every_n_epochs = 5,
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"{model.backbone.__class__.__name__}"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}"
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=1,
+                        monitor="val_loss",
+                        mode="min",
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"best"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
+                    )],
+        #ckpt_path = './vMF_IS_08_15/checkpoints/best-epoch=18-val_loss=0.19-train_loss=0.20.ckpt',
+        **config["fit"]
+    )
 
-df = pd.DataFrame(data)
-df.to_pickle(f'{model_path}/performance.pkl')
+    # Get predictions
+    additional_attributes = model.target_labels
+    assert isinstance(additional_attributes, list)  # mypy
+    
 
-# performance_events = pd.DataFrame({'event_no': event_nos})
-# performance_events.to_pickle(f'{model_path}/performance_events.pkl')
+    results = model.predict_as_dataframe(
+        validation_dataloader,
+        additional_attributes=additional_attributes + ["event_no"],
+        gpus=config["fit"]["gpus"],
+    )
+
+    
+
+    # Save results as .csv
+    results.to_csv(f"{save_path}/results.csv")
+
+    # Save full model (including weights) to .pth file - not version safe
+    # Note: Models saved as .pth files in one version of graphnet
+    #       may not be compatible with a different version of graphnet.
+    model.save(f"{save_path}/model.pth")
+
+    # Save model config and state dict - Version safe save method.
+    # This method of saving models is the safest way.
+    model.save_state_dict(f"{save_path}/state_dict.pth")
+    model.save_config(f"{save_path}/model_config.yml")
+
+if __name__ == "__main__":
+
+    # settings
+    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
+    save_path = '/scratch/users/mbranden/graphnet/playground/vMF_IS_09_12'
+
+    pulsemap = 'InIcePulses'
+    target = 'scrambled_class'
+    truth_table = 'truth'
+    gpus = [2]
+    max_epochs = 250
+    early_stopping_patience = 10
+    batch_size = 500
+    num_workers = 30
+    wandb =  True
+    kappa = 5
+
+    main(
+            path=path,
+            save_path = save_path,
+            pulsemap = pulsemap,
+            target = target,
+            truth_table = truth_table,
+            gpus = gpus,
+            max_epochs = max_epochs,
+            early_stopping_patience = early_stopping_patience,
+            batch_size = batch_size,
+            num_workers = num_workers,
+            wandb = wandb,
+            kappa = kappa,
+        )
