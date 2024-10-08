@@ -749,7 +749,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
 
         # Filter based on pulse count
         conn = sqlite3.connect(self._path)
-        query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+
+        query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
         min_count = 1
         max_count = 1000
@@ -996,14 +997,15 @@ path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks
 pulsemap = 'InIcePulses'
 target = 'scrambled_class'
 truth_table = 'truth'
-gpus = []
+gpus = [0]
 max_epochs = 30
 early_stopping_patience = 5
 batch_size = 100
 num_workers = 30
 wandb =  False
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 print('GPU: ',torch.cuda.is_available())
+print(torch.cuda.current_device())
 features = FEATURES.ICECUBE86
 truth = TRUTH.ICECUBE86
 
@@ -1014,10 +1016,11 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model_path = './vMF_IS_09_11'
+model_path = './vMF_IS_10_04'
 model = Model.load(f'{model_path}/model.pth')
-# checkpoint_path = f'{model_path}/checkpoints/best-epoch=3-val_loss=0.03-train_loss=0.03.ckpt'
-# model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
+#model = Model.load('./vMF_IS_09_13/model.pth')
+#checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
+#model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1029,7 +1032,7 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     truth_table=truth_table,
     labels= labels,
     selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 10000,
+    no_of_events = 1000,
     shuffle = False,
     seed = 6
 )
@@ -1178,6 +1181,14 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             max_ze.append(fine_ze_all[j*len(fine_log_skymap)+max_id])
             max_az.append(fine_az_all[j*len(fine_log_skymap)+max_id])
 
+    fine_az_all = []
+    fine_ze_all = []
+    fine_x = []
+    fine_log_skymap = []
+    bb = []
+    x = []
+
+
 
     # truth lh
     truth_azimuth = torch.tensor(truth_azimuth)
@@ -1188,7 +1199,7 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
     truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(device)
     truth_x_list = []
     for d in data:
-        x = model.backbone(d.to(device)).to(device)
+        x = model.backbone(d.to(device))
         truth_x_list.extend(x)
     x = torch.stack(truth_x_list)
     x = torch.cat([x,truth_directions],dim=1).float().to(device)

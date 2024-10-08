@@ -1036,7 +1036,8 @@ def make_train_validation_dataloader(
         selection=validation_selection,
         **common_kwargs,  # type: ignore[arg-type]
     )
-
+    print('Training events: ',len(training_selection))
+    print('Validation events: ', len(validation_selection))
     return (
         training_dataloader,
         validation_dataloader,
@@ -1114,98 +1115,6 @@ class LikelihoodFreeModel(StandardModel):
         preds = [task(x) for task in self._tasks]
         return preds
     
-    
-    def predict_skymap(self, data: Union[Data, List[Data]], nside = 8) -> List[Union[torch.Tensor, Data]]:
-        """Forward pass, chaining model components."""
-        self.inference()
-        self.train(mode=False)
-
-        if isinstance(data, Data):
-            data = [data]
-
-        truth_azimuth = []
-        truth_zenith = []
-                
-        npix = hp.nside2npix(nside)
-        directions = hp.pix2vec(nside, np.arange(npix))
-        directions = torch.tensor(directions).T  # Shape: (npix, 3)
-
-        zenith, azimuth = hp.pix2ang(nside,np.arange(npix))
-        
-
-        #NEED TO THINK ABOUT THIS MORE
-        zenith = np.pi/2 - zenith  # Convert colatitude to zenith angle
-
-        x_list = []
-        
-
-        for d in tqdm(data):
-            x = self.backbone(d)
-            truth_azimuth.extend(d['azimuth'].numpy())
-            truth_zenith.extend(d['zenith'].numpy())
-
-            for z in range(x.shape[0]):
-                x_list.extend(npix*[x[z]])
-        
-        
-        events_count = int(len(x_list)/npix)
-        y_list = [directions for _ in range(events_count)]
-        x = torch.stack(x_list)
-        y = torch.stack(y_list).reshape(len(x_list),3)
-
-        # Add scrambled target to inputs
-        x = torch.cat([x, y], dim=1).float()  # Shape: (num_events * npix, feature_dim + 3)
-        
-        # Pass both latent vec and scrambled target to discriminator
-        x = self._discriminator(x)
-
-        # Pass to task
-        task_preds = [task(x) for task in self._tasks]
-        events_count = len(data)
-        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
-        preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
-
-        return preds, azimuth, zenith, truth_azimuth, truth_zenith
-
-
-
-
-class ScrambledZenith(Label):
-    """."""
-
-    def __init__(
-        self,
-        key: str = "scrambled_zenith",
-        scramble_flag: str = 'scrambled_class',
-        zenith_key: str = 'zenith',
-    ):
-        """Construct `Direction`.
-
-        Args:
-            key: The name of the field in `Data` where the label will be
-                stored. That is, `graph[key] = label`.
-
-        """
-        # Base class constructor
-        super().__init__(key=key)
-        self._scramble_flag = scramble_flag
-        self._zenith_key = zenith_key
-        self.zenith = torch.rand((1,))*torch.pi 
-
-    def __call__(self, graph: Data) -> torch.tensor:
-        """Compute label for `graph`."""
-
-        # check that the flag is there
-        assert  self._scramble_flag in graph.keys()
-        assert graph[self._scramble_flag] is not None
-        
-        if graph[self._scramble_flag] == 1:
-            val = graph[self._zenith_key].unsqueeze(0)
-        else:
-            val = self.zenith
-            self.zenith = graph[self._zenith_key].unsqueeze(0)
-
-        return val
 
 class ScrambledDirection(Label):
     """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
@@ -1359,6 +1268,7 @@ class VMFDirection(Label):
         self._azimuth_key = azimuth_key
         self._zenith_key = zenith_key
         self.kappa = kappa
+        self.i = 0
 
         # Base class constructor
         super().__init__(key=key)
@@ -1545,6 +1455,10 @@ class VMFDirection(Label):
         # check that the flag is there
         assert  self._scramble_flag in graph.keys()
         assert graph[self._scramble_flag] is not None
+        
+        self.i += 1
+        if self.i%(9335448/3) == 0:
+            self.kappa += 0.1
 
         x = torch.cos(graph[self._azimuth_key]) * torch.sin(
             graph[self._zenith_key]
@@ -1598,6 +1512,7 @@ class importance(Label):
         self._azimuth_key = azimuth_key
         self._zenith_key = zenith_key
         self.kappa = kappa
+        self.i = 0
 
         # Base class constructor
         super().__init__(key=key)
@@ -1623,6 +1538,11 @@ class importance(Label):
         assert  self._scramble_flag in graph.keys()
         assert graph[self._scramble_flag] is not None
 
+        self.i += 1
+        if self.i%(9335448/3) == 0:
+            self.kappa += 0.1
+
+
         val = torch.tensor(2*torch.pi).unsqueeze(0) #1/U
 
         if graph[self._scramble_flag] == 0:
@@ -1641,7 +1561,8 @@ class importance(Label):
             x = graph[self._scrambled_key]
             x= x[0].numpy().flatten()
             x = x/ np.linalg.norm(x)
-            val = torch.tensor(min(1/self.vmf_pdf_3d(x,mu,self.kappa),1000.)).unsqueeze(0) #1/Q
+            #val = torch.tensor(min(1/self.vmf_pdf_3d(x,mu,self.kappa),1000.)).unsqueeze(0) #1/Q
+            val = torch.tensor(1/self.vmf_pdf_3d(x,mu,self.kappa)).unsqueeze(0) #1/Q
         return val
 
 
@@ -1761,13 +1682,18 @@ def main(
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
     
-    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
+    # pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
 
-    backbone = pretrained_dynedge.backbone
-    for i,param in enumerate(backbone.parameters()):
-        param.requires_grad = False
-        if i == len(list(backbone.parameters())) - 3:
-            break
+    # backbone = pretrained_dynedge.backbone
+    # for i,param in enumerate(backbone.parameters()):
+    #     param.requires_grad = False
+    #     if i == len(list(backbone.parameters())) - 3:
+    #         break
+
+    backbone = DynEdge(
+    nb_inputs=graph_definition.nb_outputs,
+    global_pooling_schemes=["min", "max", "mean", "sum"],
+    )
 
 
     task = freedom_BinaryClassificationTask(
@@ -1786,13 +1712,13 @@ def main(
         scrambled_target="scrambled_direction",
         tasks=[task],
         optimizer_class=Adam,
-        optimizer_kwargs={"lr": 1e-06, "eps": 1e-3},
+        optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 3, 'factor': 0.1},
+        scheduler_kwargs={'patience': 5, 'factor': 0.1},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
-    model.load_state_dict('./plots_08_07_2/state_dict.pth')
+    #model.load_state_dict('./plots_08_07_2/state_dict.pth')
 
 
     #Training model
@@ -1821,7 +1747,7 @@ def main(
                         filename=f"best"
                         + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
                     )],
-        #ckpt_path = './vMF_IS_08_15/checkpoints/best-epoch=18-val_loss=0.19-train_loss=0.20.ckpt',
+        #ckpt_path = './vMF_IS_09_18/checkpoints/DynEdge-epoch=54-val_loss=0.15-train_loss=0.14.ckpt',
         **config["fit"]
     )
 
@@ -1855,18 +1781,18 @@ if __name__ == "__main__":
 
     # settings
     path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/vMF_IS_09_12'
+    save_path = '/scratch/users/mbranden/graphnet/playground/vMF_IS_10_04'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
-    gpus = [2]
+    gpus = [1]
     max_epochs = 250
-    early_stopping_patience = 10
+    early_stopping_patience = 12
     batch_size = 500
     num_workers = 30
     wandb =  True
-    kappa = 5
+    kappa = 0.5
 
     main(
             path=path,

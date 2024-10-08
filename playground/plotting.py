@@ -865,6 +865,7 @@ def make_freedom_dataloader(
     if isinstance(pulsemaps, str):
         pulsemaps = [pulsemaps]
 
+
     dataset = freedom_SQLiteDataset(
         path=db,
         pulsemaps=pulsemaps,
@@ -884,6 +885,7 @@ def make_freedom_dataloader(
         selection = dataset._get_all_indices()
         random.seed(seed)
         selection = random.sample(selection, no_of_events)
+        
         dataset = freedom_SQLiteDataset(
             path=db,
             pulsemaps=pulsemaps,
@@ -1002,7 +1004,8 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
+model_path = './plots_08_07_2'
+model = Model.load(f'{model_path}/model.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1019,10 +1022,78 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     seed = 5
 )
 
-skymap, azimuth, zenith, truth_azimuth, truth_zenith = model.predict_skymap(skymap_dataloader, nside = 32)
+def new_predict_skymap(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, Data]]:
+    """Forward pass, chaining model components."""
+    model.inference()
+    model.train(mode=False)
 
-print('max lr azimuth', azimuth[int(np.argmax(skymap[0].flatten())%len(azimuth))])
-print('max lr zenith', zenith[int(np.argmax(skymap[0].flatten())%len(azimuth))])
+    if isinstance(data, Data):
+        data = [data]
+
+    truth_azimuth = []
+    truth_zenith = []
+    event_nos = []
+
+    zenith = np.linspace(0,np.pi,500)
+    azimuth = np.linspace(0,2*np.pi,500)
+    ze,az = np.meshgrid(zenith, azimuth)
+    zenith = torch.tensor(ze.flatten())
+    azimuth = torch.tensor(az.flatten())
+
+    x = torch.cos(azimuth) * torch.sin(zenith)
+    y = torch.sin(azimuth) * torch.sin(zenith)
+    z = torch.cos(zenith)
+    directions = torch.stack((x, y, z), dim=1)
+
+    npix = directions.shape[0]
+    x_list = []
+    
+
+    for d in tqdm(data):
+        x = model.backbone(d)
+        truth_azimuth.extend(d['azimuth'].numpy())
+        truth_zenith.extend(d['zenith'].numpy())
+        event_nos.extend(d['event_no'].numpy())
+
+        for z in range(x.shape[0]):
+            x_list.extend(npix*[x[z]])
+    
+    
+    events_count = int(len(x_list)/npix)
+    y_list = [directions for _ in range(events_count)]
+    x = torch.stack(x_list)
+    y = torch.stack(y_list).reshape(len(x_list),3)
+
+    # Add scrambled target to inputs
+    x = torch.cat([x, y], dim=1).float()  # Shape: (num_events * npix, feature_dim + 3)
+    
+    # Pass both latent vec and scrambled target to discriminator
+    x = model._discriminator(x)
+
+    # Pass to task
+    task_preds = [task(x) for task in model._tasks]
+    events_count = len(data)
+    pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
+    preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
+
+    return preds, az, ze, truth_azimuth, truth_zenith, event_nos
+
+skymap, azimuth, zenith, truth_azimuth, truth_zenith, event_nos = new_predict_skymap(model,skymap_dataloader)
+log_skymap = np.log(skymap[0].reshape(azimuth.shape))
+max_log_skymap = np.max(log_skymap)
+delta_log_skymap = log_skymap - max_log_skymap
+
+sqliteConnection = sqlite3.connect("/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db")
+cursor = sqliteConnection.cursor()
+event_numbers_str = ','.join(map(str, event_nos))
+query = f"SELECT * FROM spline_mpe_ic WHERE event_no IN ({event_numbers_str});"
+cursor.execute(query)
+spline = cursor.fetchall()
+spline_az = spline[0][0]
+spline_ze = spline[0][2]
+
+print('max lr azimuth', azimuth.flatten()[int(np.argmax(skymap[0].flatten()))])
+print('max lr zenith', zenith.flatten()[int(np.argmax(skymap[0].flatten()))])
 print('max lr = ', max(skymap[0].flatten()))
 print('index =', np.argmax(skymap[0].flatten()))
 print(truth_azimuth,truth_zenith)
@@ -1032,97 +1103,69 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from matplotlib import cm
 
-log_skymap = np.log(skymap[0].flatten())
 
-# Reshape the log_skymap to match the coordinate grid
-#log_skymap_grid = log_skymap.reshape((len(set(azimuth)), len(set(zenith))))
+fig = plt.figure(figsize=(6, 6))
+ax = fig.add_subplot(111)  # Remove the projection='mollweide'
 
-# Mollweide projection
-fig = plt.figure(figsize=(10, 5))
-ax = fig.add_subplot(111, projection='mollweide')
-cax = ax.scatter(azimuth-np.pi, zenith , c=log_skymap, cmap=cm.jet)
-
-cb = fig.colorbar(cax, orientation='horizontal')
-cb.set_label('log-likelihood')
-
-ax.grid(True)
-
-# Add labels
-ax.set_xlabel('azimuth')
-ax.set_ylabel('zenith')
-
-# Calculate truth and max likelihood points
-if truth_azimuth[0] > np.pi:
-    plot_truth_azimuth = truth_azimuth[0] - 2 * np.pi
-else:
-    plot_truth_azimuth = truth_azimuth[0]
-
+# Calculate the index of maximum likelihood
 max_likelihood_idx = np.argmax(np.log(skymap[0].flatten()))
-if azimuth[max_likelihood_idx] > np.pi:
-    plot_best_azimuth = azimuth[max_likelihood_idx] - 2 * np.pi
-else:
-    plot_best_azimuth = azimuth[max_likelihood_idx]
 
-# Plot truth and maximum likelihood points
-ax.plot(plot_truth_azimuth-np.pi, -truth_zenith[0]+np.pi/2, 'rx', markersize=10, label='Truth')
-ax.plot(plot_best_azimuth-np.pi, zenith[max_likelihood_idx], 'bx', markersize=10, label='max Likelihood')
+# Define the zoom region (20 degrees in radians)
+delta = 20 * (np.pi / 180)
 
-# Add legend
+# Calculate the azimuth and zenith bounds for the zoomed-in region
+azimuth_min = azimuth.flatten()[max_likelihood_idx] - delta
+azimuth_max = azimuth.flatten()[max_likelihood_idx] + delta
+zenith_min = zenith.flatten()[max_likelihood_idx] - delta
+zenith_max = zenith.flatten()[max_likelihood_idx] + delta
+
+# Mask the data within the zoomed-in region
+mask = (azimuth >= azimuth_min) & (azimuth <= azimuth_max) & \
+       (zenith >= zenith_min) & (zenith <= zenith_max)
+
+masked_log_skymap = np.ma.masked_where(~mask, delta_log_skymap)
+
+# Find the min and max values within the masked region for color scaling
+min_val = np.min(masked_log_skymap)
+max_val = np.max(masked_log_skymap)
+
+# Plot the masked skymap with the adjusted colormap scale
+cax = ax.pcolormesh(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap,
+                    cmap=cm.viridis, shading='gouraud', vmin=min_val, vmax=max_val)
+
+# Add colorbar
+cb = fig.colorbar(cax, orientation='horizontal')
+cb.set_label(r'$\Delta$log-likelihood')
+
+# Plot the truth position and max likelihood position
+ax.plot(np.degrees(truth_azimuth[0] - np.pi), np.degrees(-truth_zenith[0] + np.pi / 2), 'rx', markersize=10, label='Truth')
+ax.plot(np.degrees(spline_az - np.pi),np.degrees(-spline_ze + np.pi / 2), 'gx', markersize=10, label='spline mpe')
+ax.plot(np.degrees(azimuth.flatten()[max_likelihood_idx] - np.pi), np.degrees(-zenith.flatten()[max_likelihood_idx] + np.pi / 2), 'bx', markersize=10, label='Max Likelihood')
+
+# Add a contour line
+clevel = -2.305
+cs = ax.contour(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap, levels=[clevel], linewidths=1, linestyles='solid')
+# print(cs.levels)
+# fmt = {}
+# strs = ['90 %']
+# for l, s in zip(cs.levels, strs):
+#     fmt[l] = s
+# print(fmt)
+# ax.clabel(cs, inline=True,fmt = fmt, fontsize=10)
+cs.collections[0].set_label(f'90% contour')
+
+# Set the axis limits to zoom in
+ax.set_xlim(np.degrees(azimuth_min - np.pi), np.degrees(azimuth_max - np.pi))
+ax.set_ylim(np.degrees(-zenith_max + np.pi / 2), np.degrees(-zenith_min + np.pi / 2))
+
+# Add grid, labels, and legend
+ax.grid(True)
+ax.set_xlabel('Azimuth [deg]')
+ax.set_ylabel('Zenith [deg]')
 ax.legend()
 
-# Save and show plot
+# Adjust layout and save the figure
 plt.tight_layout()
-plt.savefig('./llh_skymap_1.pdf')
+plt.savefig(f'{model_path}/delta_llh_skymap_zoomed_1.pdf')
 plt.show()
 plt.close()
-
-# # Plot the skymap
-# # classic healpy mollweide projections plot with graticule and axis labels and vertical color bar
-# projview(
-#     np.log(skymap[0].flatten()),
-#     coord = 'e',
-#     graticule=True,
-#     graticule_labels=True,
-#     unit="log-likelihood",
-#     xlabel="azimuth",
-#     ylabel="zenith",
-#     cb_orientation="horizontal",
-#     projection_type="mollweide",
-# )
-
-
-# if truth_azimuth[0]>np.pi:
-#     plot_truth_azimuth = truth_azimuth[0]-2*np.pi
-# else:
-#     plot_truth_azimuth = truth_azimuth[0]
-
-# if azimuth[np.argmax(skymap[0].flatten())]>np.pi:
-#     plot_best_azimuth = azimuth[np.argmax(skymap[0].flatten())] - 2*np.pi
-# else:
-#     plot_best_azimuth = azimuth[np.argmax(skymap[0].flatten())]
-
-# # Plot truth and maximum likelihood points
-# newprojplot(phi=plot_truth_azimuth, theta=truth_zenith[0], marker="x", color="r", markersize=10, label= 'Truth')
-# newprojplot(phi=plot_best_azimuth, theta=-zenith[np.argmax(skymap[0].flatten())]+np.pi/2, marker="x", color="b", markersize=10, label= 'max Likelihood')
-# #newprojplot(theta=np.pi/3, phi=np.pi/3, marker="x", color="g", markersize=10, label= 'test')
-
-# # Add legend
-# plt.legend()
-# plt.tight_layout()
-
-# # Save and show plot
-# plt.savefig('./llh_skymap_1.pdf')
-# plt.show()
-# plt.close()
-
-# plt.figure()
-# hp.visufunc.gnomview(np.log(skymap[0].flatten()),rot=(np.degrees(plot_truth_azimuth),np.degrees(truth_zenith[0])),reso=50, xsize = 600, ysize = 600)
-# newprojplot(phi=plot_truth_azimuth, theta=truth_zenith[0], marker="x", color="r", markersize=10, label= 'Truth')
-# newprojplot(phi=plot_best_azimuth, theta=-zenith[np.argmax(skymap[0].flatten())]+np.pi/2, marker="x", color="b", markersize=10, label= 'max Likelihood')
-# plt.legend()
-# plt.tight_layout()
-
-# # Save and show plot
-# plt.savefig('./llh_zoomed_1.pdf')
-# plt.show()
-# plt.close()

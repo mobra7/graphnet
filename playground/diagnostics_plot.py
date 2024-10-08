@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-path = './plots_07_23_1'
+path = './vMF_IS_08_19'
 df = pd.read_pickle(f'{path}/diagnostics.pkl')
 df['target_pred'] = 1/(1+np.exp(-np.log(df['target_pred'])))
 
@@ -13,6 +13,8 @@ sns.kdeplot(data=df, x="target_pred", hue="scrambled_class", fill=True, common_n
 plt.yscale('log')
 plt.xlim(0,1)
 plt.xlabel('Prediction')
+plt.text(.01, .99, r'p(x)p($\theta$)', ha='left', va='top', transform=plt.gca().transAxes)
+plt.text(.99, .99, r'p(x|$\theta$)', ha='right', va='top', transform=plt.gca().transAxes)
 
 plt.tight_layout()
 plt.savefig(f'{path}/diagnostics1.pdf')

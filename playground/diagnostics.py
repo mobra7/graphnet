@@ -748,8 +748,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         conn = sqlite3.connect(self._path)
         query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 150
-        max_count = 300
+        min_count = 1
+        max_count = 1000
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
         
         
@@ -1010,7 +1010,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model_path = './plots_07_23_1'
+model_path = './vMF_IS_08_20_2'
 model = Model.load(f'{model_path}/model.pth')
 
 diagnostics_dataloader = make_freedom_dataloader(db=path,

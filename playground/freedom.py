@@ -23,7 +23,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.data import Data
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.model_selection import train_test_split
 
 from graphnet.constants import EXAMPLE_DATA_DIR, EXAMPLE_OUTPUT_DIR, GRAPHNET_ROOT_DIR
@@ -40,13 +40,12 @@ from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import freedom_BinaryClassificationTask
-from graphnet.training.callbacks import PiecewiseLinearLR
+from graphnet.training.callbacks import PiecewiseLinearLR, ProgressBar
 
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
 from graphnet.training.utils import collate_fn
-from graphnet.utilities.config import (Configurable, DatasetConfig,
-                                       DatasetConfigSaverABCMeta)
+from graphnet.utilities.config import Configurable, DatasetConfig,DatasetConfigSaverABCMeta, ModelConfig
 from graphnet.utilities.logging import Logger
 
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
@@ -754,7 +753,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
 
         # Filter based on pulse count
         conn = sqlite3.connect(self._path)
-        query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+        query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
         min_count = 1
         max_count = 1000
@@ -928,7 +927,6 @@ def make_freedom_dataloader(
     return dataloader
 
 
-# @TODO: Remove in favour of DataLoader{,.from_dataset_config}
 def make_train_validation_dataloader(
     db: str,
     graph_definition: GraphDefinition,
@@ -1114,99 +1112,7 @@ class LikelihoodFreeModel(StandardModel):
         # Pass to task
         preds = [task(x) for task in self._tasks]
         return preds
-    
-    
-    def predict_skymap(self, data: Union[Data, List[Data]], nside = 8) -> List[Union[torch.Tensor, Data]]:
-        """Forward pass, chaining model components."""
-        self.inference()
-        self.train(mode=False)
 
-        if isinstance(data, Data):
-            data = [data]
-
-        truth_azimuth = []
-        truth_zenith = []
-                
-        npix = hp.nside2npix(nside)
-        directions = hp.pix2vec(nside, np.arange(npix))
-        directions = torch.tensor(directions).T  # Shape: (npix, 3)
-
-        zenith, azimuth = hp.pix2ang(nside,np.arange(npix))
-        
-
-        #NEED TO THINK ABOUT THIS MORE
-        zenith = np.pi/2 - zenith  # Convert colatitude to zenith angle
-
-        x_list = []
-        
-
-        for d in tqdm(data):
-            x = self.backbone(d)
-            truth_azimuth.extend(d['azimuth'].numpy())
-            truth_zenith.extend(d['zenith'].numpy())
-
-            for z in range(x.shape[0]):
-                x_list.extend(npix*[x[z]])
-        
-        
-        events_count = int(len(x_list)/npix)
-        y_list = [directions for _ in range(events_count)]
-        x = torch.stack(x_list)
-        y = torch.stack(y_list).reshape(len(x_list),3)
-
-        # Add scrambled target to inputs
-        x = torch.cat([x, y], dim=1).float()  # Shape: (num_events * npix, feature_dim + 3)
-        
-        # Pass both latent vec and scrambled target to discriminator
-        x = self._discriminator(x)
-
-        # Pass to task
-        task_preds = [task(x) for task in self._tasks]
-        events_count = len(data)
-        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
-        preds = np.array([event_pred.detach().numpy() for event_pred in pred_chunk])
-
-        return preds, azimuth, zenith, truth_azimuth, truth_zenith
-
-
-
-
-class ScrambledZenith(Label):
-    """."""
-
-    def __init__(
-        self,
-        key: str = "scrambled_zenith",
-        scramble_flag: str = 'scrambled_class',
-        zenith_key: str = 'zenith',
-    ):
-        """Construct `Direction`.
-
-        Args:
-            key: The name of the field in `Data` where the label will be
-                stored. That is, `graph[key] = label`.
-
-        """
-        # Base class constructor
-        super().__init__(key=key)
-        self._scramble_flag = scramble_flag
-        self._zenith_key = zenith_key
-        self.zenith = torch.rand((1,))*torch.pi 
-
-    def __call__(self, graph: Data) -> torch.tensor:
-        """Compute label for `graph`."""
-
-        # check that the flag is there
-        assert  self._scramble_flag in graph.keys()
-        assert graph[self._scramble_flag] is not None
-        
-        if graph[self._scramble_flag] == 1:
-            val = graph[self._zenith_key].unsqueeze(0)
-        else:
-            val = self.zenith
-            self.zenith = graph[self._zenith_key].unsqueeze(0)
-
-        return val
 
 class ScrambledDirection(Label):
     """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
@@ -1395,7 +1301,7 @@ def main(
         loss_function= BinaryCrossEntropyLoss(),
     )
     discriminator = disc_NeuralNetwork(backbone.nb_outputs+3, 1)
-    print(backbone.nb_outputs+3)
+    
 
     model = LikelihoodFreeModel(
         graph_definition=graph_definition,
@@ -1404,21 +1310,13 @@ def main(
         scrambled_target="scrambled_direction",
         tasks=[task],
         optimizer_class=Adam,
-        optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
+        optimizer_kwargs={"lr": 1e-05, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 3, 'factor': 0.1},
+        scheduler_kwargs={'patience': 4, 'factor': 0.1},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
-    # class CustomModelCheckpoint(ModelCheckpoint):
-    #     def __init__(self, save_epochs, *args, **kwargs):
-    #         super().__init__(*args, **kwargs)
-    #         self.save_epochs = save_epochs
-
-    #     def on_train_epoch_end(self, trainer, dirpath):
-    #         # Save the checkpoint if the current epoch is in the save_epochs list
-    #         if trainer.current_epoch in self.save_epochs:
-    #             self._save_checkpoint(trainer, dirpath)
+    # model.load_state_dict('./plots_08_07_2/state_dict.pth')
 
 
     #Training model
@@ -1427,10 +1325,13 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
-        callbacks= [ModelCheckpoint(
-                        save_top_k=5,
-                        mode = 'max',
-                        monitor = 'val_loss',
+        callbacks= [ProgressBar(),
+                    EarlyStopping(
+                    monitor="val_loss",
+                    patience=early_stopping_patience,
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=-1,
                         every_n_epochs = 5,
                         dirpath=f"{save_path}/checkpoints/",
                         filename=f"{model.backbone.__class__.__name__}"
@@ -1441,7 +1342,7 @@ def main(
                         monitor="val_loss",
                         mode="min",
                         dirpath=f"{save_path}/checkpoints/",
-                        filename=f"{model.backbone.__class__.__name__}"
+                        filename=f"best"
                         + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
                     )],
         # ckpt_path = '/scratch/users/mbranden/graphnet/playground/lightning_logs/version_78/checkpoints/DynEdge-epoch=145-val_loss=0.04-train_loss=0.04.ckpt',
@@ -1478,14 +1379,14 @@ if __name__ == "__main__":
 
     # settings
     path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_07_2'
+    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_14'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
     gpus = [1]
     max_epochs = 250
-    early_stopping_patience = 10
+    early_stopping_patience = 12
     batch_size = 500
     num_workers = 30
     wandb =  True

@@ -14,7 +14,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 
 
-model_path = './vMF_IS_10_04'
+model_path = './SNRE_09_30'
 freedom = pd.read_pickle(f'{model_path}/performance.pkl')
 dynedge_model = Model.load(f'./dynedge_baseline_3/model.pth')
 
@@ -94,29 +94,7 @@ def angle_dynedge(az_true, zen_true, x_pred, y_pred, z_pred):
     return np.abs(np.arccos(scalar_prod))
 
 df = pd.DataFrame()
-df['dynedge'] = angle_dynedge(dynedge['azimuth'], dynedge['zenith'], dynedge['dir_x_pred'], dynedge['dir_y_pred'], dynedge['dir_z_pred'])
-
-def angle_model(az_true, zen_true, az_pred, zen_pred):
-
-    sa1 = np.sin(az_true)
-    ca1 = np.cos(az_true)
-    sz1 = np.sin(zen_true)
-    cz1 = np.cos(zen_true)
-    
-    sa2 = np.sin(az_pred)
-    ca2 = np.cos(az_pred)
-    sz2 = np.sin(zen_pred)
-    cz2 = np.cos(zen_pred)
-    
-    # scalar product of the two cartesian vectors (x = sz*ca, y = sz*sa, z = cz)
-    scalar_prod = sz1*sz2*(ca1*ca2 + sa1*sa2) + (cz1*cz2)
-    
-    scalar_prod =  np.clip(scalar_prod, -1, 1)
-
-    return np.abs(np.arccos(scalar_prod))
-
-df['SBI'] = angle_model(freedom['truth_az'], freedom['truth_ze'], freedom['max_llh_az'], freedom['max_llh_ze'])
-df['spline'] = angle_model(freedom['truth_az'], freedom['truth_ze'], freedom['spline_az'], freedom['spline_ze'])
+df['dynedge_to_sbi'] = angle_dynedge(freedom['max_llh_az'], freedom['max_llh_ze'],dynedge['dir_x_pred'], dynedge['dir_y_pred'], dynedge['dir_z_pred'])
 
 bin_edges = np.linspace(0, 20000, 21)
 bin_centers = [0.5 * (bin_edges[i] + bin_edges[i+1]) for i in range(len(bin_edges) - 1)]
@@ -173,7 +151,7 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
     ax1.set_xlabel('Energy [GeV]')
     ax1.set_ylabel('Opening Angle [deg]')
     ax1.set_title(title)
-    ax1.set_ylim(0, 6)
+    ax1.set_ylim(0, 3)
     ax1.set_xlim(0, bin_edges[-1])
     ax1.tick_params(axis='x', rotation=45)
     ax1.legend(loc='upper right')
@@ -192,9 +170,9 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
     plt.close()
 
 # Call the function with both columns
-plot_percentiles_comparison_with_bootstrap(df, ['dynedge', 'SBI'], 
-                                           f'Comparison of dynedge and SBI Method with 95%-Bands', 
-                                           f'{model_path}/comparison_with_uncertainties.pdf')
+plot_percentiles_comparison_with_bootstrap(df, ['dynedge_to_sbi'], 
+                                           f'Opening Angle between dynedge and SBI Method with 95%-Bands', 
+                                           f'{model_path}/dynedge_to_SBI.pdf')
 
-print('Model mean opening angle: ', np.degrees(np.mean(df['SBI'])))
-print('Baseline mean opening angle: ', np.degrees(np.mean(df['dynedge'])))
+print('Model to Baseline mean opening angle: ', np.degrees(np.mean(df['dynedge_to_sbi'])))
+

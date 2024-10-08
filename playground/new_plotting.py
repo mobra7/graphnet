@@ -748,8 +748,8 @@ class freedom_SQLiteDataset(freedom_Dataset):
         conn = sqlite3.connect(self._path)
         query = f"SELECT event_no FROM {pulsemap} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 150
-        max_count = 300
+        min_count = 1
+        max_count = 1000
         indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
         print('done')
         return [(num, 0) for num in indices] + [(num, 1) for num in indices]
@@ -1004,7 +1004,8 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model = Model.load('/scratch/users/mbranden/graphnet/data/examples/output/train_model_without_configs/dev_northern_tracks_full_part_1/dynedge_scrambled_class_example/model.pth')
+model_path = './plots_08_07_2'
+model = Model.load(f'{model_path}/model.pth')
 
 skymap_dataloader = make_freedom_dataloader(db=path,
     graph_definition=graph_definition,
@@ -1018,7 +1019,7 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     selection= None, #either None, str, or List[(event_no,scramble_class)]
     no_of_events = 1,
     shuffle = True,
-    seed = 5
+    seed = 8
 )
 
 def new_predict_skymap(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, Data]]:
@@ -1078,7 +1079,8 @@ def new_predict_skymap(model, data: Union[Data, List[Data]]) -> List[Union[torch
     return preds, az, ze, truth_azimuth, truth_zenith, event_nos
 
 skymap, azimuth, zenith, truth_azimuth, truth_zenith, event_nos = new_predict_skymap(model,skymap_dataloader)
-log_skymap = np.log(skymap[0].reshape(azimuth.shape))
+log_skymap = np.where(skymap > 0.000001, skymap, 0.000001)
+log_skymap = np.log(log_skymap[0].reshape(azimuth.shape))
 max_log_skymap = np.max(log_skymap)
 delta_log_skymap = log_skymap - max_log_skymap
 
@@ -1096,75 +1098,164 @@ print('max lr zenith', zenith.flatten()[int(np.argmax(skymap[0].flatten()))])
 print('max lr = ', max(skymap[0].flatten()))
 print('index =', np.argmax(skymap[0].flatten()))
 print(truth_azimuth,truth_zenith)
+print(zenith.shape, azimuth.shape)
 
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 from matplotlib import cm
 
+def rotate_coordinates(zenith, azimuth, z0, a0):
+    # Convert input angles from degrees to radians
+    zenith = np.radians(zenith)
+    azimuth = np.radians(azimuth)
+    z0 = np.radians(z0)
+    a0 = np.radians(a0)
+    
+    # Convert spherical coordinates to Cartesian coordinates
+    x = np.sin(zenith) * np.cos(azimuth)
+    y = np.sin(zenith) * np.sin(azimuth)
+    z = np.cos(zenith)
 
-fig = plt.figure(figsize=(6, 6))
-ax = fig.add_subplot(111)  # Remove the projection='mollweide'
+    # Rotation matrices
+    Rz_a0 = np.array([
+        [np.cos(-a0), -np.sin(-a0), 0],
+        [np.sin(-a0),  np.cos(-a0), 0],
+        [0,            0,           1]
+    ])
+    
+    Ry_z0 = np.array([
+        [np.cos(-z0), 0, np.sin(-z0)],
+        [0,           1, 0          ],
+        [-np.sin(-z0),0, np.cos(-z0)]
+    ])
+    
+    # Apply the rotations
+    coords = np.stack([x, y, z], axis = 0)
+    
+    rotated_coords_rz = np.tensordot(Rz_a0, coords, axes=([1], [0]))
+    
+    # Apply Ry_z0 to the result
+    rotated_coords = np.tensordot(Ry_z0, rotated_coords_rz, axes=([1], [0]))
 
-# Calculate the index of maximum likelihood
-max_likelihood_idx = np.argmax(np.log(skymap[0].flatten()))
+    # Convert back to spherical coordinates
+    x_new, y_new, z_new = rotated_coords
+    zenith_new = np.arccos(z_new)
+    azimuth_new = np.arctan2(y_new, x_new)
+    
+    # Convert radians back to degrees
+    zenith_new = np.degrees(zenith_new)
+    azimuth_new = np.degrees(azimuth_new)
+    
+    # Ensure azimuth is in range [-180, 180]
+    azimuth_new = np.where(azimuth_new > 180, azimuth_new - 360, azimuth_new)
+    azimuth_new = np.where(azimuth_new < -180, azimuth_new + 360, azimuth_new)
+    
+    # Ensure zenith is in range [-90, 90] by flipping if needed
+    zenith_new = np.where(zenith_new > 90, 180 - zenith_new, zenith_new)
+    azimuth_new = np.where(zenith_new > 90, azimuth_new + 180, azimuth_new)
 
-# Define the zoom region (20 degrees in radians)
-delta = 20 * (np.pi / 180)
+    return zenith_new, azimuth_new
 
-# Calculate the azimuth and zenith bounds for the zoomed-in region
-azimuth_min = azimuth.flatten()[max_likelihood_idx] - delta
-azimuth_max = azimuth.flatten()[max_likelihood_idx] + delta
-zenith_min = zenith.flatten()[max_likelihood_idx] - delta
-zenith_max = zenith.flatten()[max_likelihood_idx] + delta
+def mask_skymap(azimuth, zenith, delta_log_skymap, max_likelihood_idx, delta):
+    """
+    Masks the skymap to focus on a region around the maximum likelihood position.
+    """
+    azimuth_min = azimuth.flatten()[max_likelihood_idx] - delta
+    azimuth_max = azimuth.flatten()[max_likelihood_idx] + delta
+    zenith_min = zenith.flatten()[max_likelihood_idx] - delta
+    zenith_max = zenith.flatten()[max_likelihood_idx] + delta
+    
+    mask = (azimuth >= azimuth_min) & (azimuth <= azimuth_max) & \
+           (zenith >= zenith_min) & (zenith <= zenith_max)
+    
+    masked_log_skymap = delta_log_skymap[mask]
+    masked_azimuth = azimuth[mask]
+    masked_zenith = zenith[mask]
 
-# Mask the data within the zoomed-in region
-mask = (azimuth >= azimuth_min) & (azimuth <= azimuth_max) & \
-       (zenith >= zenith_min) & (zenith <= zenith_max)
+    az = np.unique(masked_azimuth)
+    ze = np.unique(masked_zenith)
 
-masked_log_skymap = np.ma.masked_where(~mask, delta_log_skymap)
+    masked_azimuth, masked_zenith = np.meshgrid(az,ze)
+    masked_log_skymap = masked_log_skymap.reshape(masked_azimuth.shape)
+    
+    return masked_log_skymap, masked_azimuth, masked_zenith
 
-# Find the min and max values within the masked region for color scaling
-min_val = np.min(masked_log_skymap)
-max_val = np.max(masked_log_skymap)
+def plot_skymap(ax, azimuth, zenith, delta_log_skymap, min_val, max_val):
+    """
+    Plots the skymap with the specified color scale limits.
+    """
+    cax = ax.pcolormesh(np.degrees(azimuth), 
+                        np.degrees(zenith), 
+                        delta_log_skymap, cmap=cm.viridis, 
+                        shading='gouraud', vmin=min_val, vmax=max_val)
+    
+    cb = plt.colorbar(cax, ax=ax, orientation='horizontal')
+    cb.set_label(r'$\Delta$log-likelihood')
+    plt.show()
 
-# Plot the masked skymap with the adjusted colormap scale
-cax = ax.pcolormesh(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap,
-                    cmap=cm.viridis, shading='gouraud', vmin=min_val, vmax=max_val)
+def main():
+    # Assume skymap, azimuth, zenith, delta_log_skymap, truth_azimuth, truth_zenith, spline_az, spline_ze are defined
+    fig, ax = plt.subplots(figsize=(6, 6))
+    
+    # Rotate coordinates to center truth at (0, 0)
+    rotated_zenith, rotated_azimuth = rotate_coordinates(zenith, azimuth, truth_zenith[0], truth_azimuth[0])
+    
+    # Calculate index of maximum likelihood and define the zoom region (20 degrees)
+    max_likelihood_idx = np.argmax(np.log(skymap[0].flatten()))
+    print(rotated_zenith.shape)
+    delta = 20 * (np.pi / 180)
+    
+    # Mask the skymap data within the zoomed-in region
+    # masked_log_skymap, masked_azimuth, masked_zenith= mask_skymap(
+    #     rotated_azimuth, rotated_zenith, delta_log_skymap, max_likelihood_idx, delta)
+    # print(masked_azimuth.shape)
+    # Determine min and max values for the color scale
+    min_val, max_val = delta_log_skymap.min(), delta_log_skymap.max()
+    
+    # Plot the skymap
+    # plot_skymap(ax, rotated_azimuth, rotated_zenith, delta_log_skymap, min_val, max_val)
+    
+    cax = ax.pcolormesh(np.degrees(rotated_azimuth), 
+                        np.degrees(rotated_zenith), 
+                        delta_log_skymap, cmap=cm.viridis, 
+                        shading='gouraud', vmin=min_val, vmax=max_val)
+    print('done')
+    
+    cb = plt.colorbar(cax, ax=ax, orientation='horizontal')
+    cb.set_label(r'$\Delta$log-likelihood')
 
-# Add colorbar
-cb = fig.colorbar(cax, orientation='horizontal')
-cb.set_label(r'$\Delta$log-likelihood')
+    # Plot truth position, spline mpe, and max likelihood
+    ax.plot(0, 0, 'rx', markersize=10, label='Truth')  # Truth is now at (0, 0)
+    ax.plot(np.degrees(spline_az - truth_azimuth[0]),
+            np.degrees(spline_ze - truth_zenith[0]), 
+            'gx', markersize=10, label='Spline MPE')
+    ax.plot(np.degrees(rotated_azimuth.flatten()[max_likelihood_idx]), 
+            np.degrees(rotated_zenith.flatten()[max_likelihood_idx]), 
+            'bx', markersize=10, label='Max Likelihood')
 
-# Plot the truth position and max likelihood position
-ax.plot(np.degrees(truth_azimuth[0] - np.pi), np.degrees(-truth_zenith[0] + np.pi / 2), 'rx', markersize=10, label='Truth')
-ax.plot(np.degrees(spline_az - np.pi),np.degrees(-spline_ze + np.pi / 2), 'gx', markersize=10, label='spline mpe')
-ax.plot(np.degrees(azimuth.flatten()[max_likelihood_idx] - np.pi), np.degrees(-zenith.flatten()[max_likelihood_idx] + np.pi / 2), 'bx', markersize=10, label='Max Likelihood')
+    # Add a contour line
+    clevel = -2.305
+    cs = ax.contour(np.degrees(rotated_azimuth), 
+                    np.degrees(rotated_zenith), 
+                    delta_log_skymap, levels=[clevel], 
+                    linewidths=1, linestyles='solid')
+    cs.collections[0].set_label(f'90% contour')
 
-# Add a contour line
-clevel = -2.305
-cs = ax.contour(np.degrees(azimuth - np.pi), np.degrees(-zenith + np.pi / 2), delta_log_skymap, levels=[clevel], linewidths=1, linestyles='solid')
-# print(cs.levels)
-# fmt = {}
-# strs = ['90 %']
-# for l, s in zip(cs.levels, strs):
-#     fmt[l] = s
-# print(fmt)
-# ax.clabel(cs, inline=True,fmt = fmt, fontsize=10)
-cs.collections[0].set_label(f'90% contour')
+    # Set axis limits for zoomed-in view
+    ax.set_ylim(-delta, delta)
+    ax.set_xlim(-delta, delta)
 
-# Set the axis limits to zoom in
-ax.set_xlim(np.degrees(azimuth_min - np.pi), np.degrees(azimuth_max - np.pi))
-ax.set_ylim(np.degrees(-zenith_max + np.pi / 2), np.degrees(-zenith_min + np.pi / 2))
+    # Add grid, labels, and legend
+    ax.grid(True)
+    ax.set_xlabel('Azimuth [deg]')
+    ax.set_ylabel('Zenith [deg]')
+    ax.legend()
 
-# Add grid, labels, and legend
-ax.grid(True)
-ax.set_xlabel('Azimuth [deg]')
-ax.set_ylabel('Zenith [deg]')
-ax.legend()
+    # Finalize and show the plot
+    plt.tight_layout()
+    plt.savefig(f'{model_path}/delta_llh_skymap_zoomed_4.pdf')
+    plt.show()
+    plt.close()
 
-# Adjust layout and save the figure
-plt.tight_layout()
-plt.savefig('./plots_30_6/delta_llh_skymap_zoomed_1.pdf')
-plt.show()
-plt.close()
+if __name__ == "__main__":
+    main()
