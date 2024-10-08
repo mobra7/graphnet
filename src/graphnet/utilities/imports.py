@@ -33,15 +33,16 @@ def has_torch_package() -> bool:
         return False
 
 
-def has_pisa_package() -> bool:
-    """Check whether the `pisa` package is available."""
+def has_jammy_flows_package() -> bool:
+    """Check if the `jammy_flows` package is available."""
     try:
-        import pisa  # pyright: reportMissingImports=false
+        import jammy_flows  # pyright: reportMissingImports=false
 
         return True
     except ImportError:
         Logger(log_folder=None).warning_once(
-            "`pisa` not available. Some functionality may be missing.",
+            "`jammy_flows` not available. Normalizing Flow functionality is "
+            "missing."
         )
         return False
 

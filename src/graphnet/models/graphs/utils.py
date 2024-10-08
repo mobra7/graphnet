@@ -1,7 +1,12 @@
 """Utility functions for construction of graphs."""
 
 from typing import List, Tuple
+import os
 import numpy as np
+import pandas as pd
+from scipy.interpolate import interp1d
+from sklearn.preprocessing import RobustScaler
+from graphnet.constants import DATA_DIR
 
 
 def lex_sort(x: np.array, cluster_columns: List[int]) -> np.ndarray:
@@ -46,7 +51,7 @@ def gather_cluster_sequence(
     Args:
         x:  Array for clustering
         feature_idx: Index of the feature in `x` to
-                     be gathered for each cluster.
+        be gathered for each cluster.
         cluster_columns: Index in `x` from which to build clusters.
 
     Returns:
@@ -61,10 +66,16 @@ def gather_cluster_sequence(
         x[:, cluster_columns], return_counts=True, axis=0
     )
     # sort DOMs and pulse-counts
-    sort_this = np.concatenate([unique_sensors, counts.reshape(-1, 1)], axis=1)
-    sort_this = lex_sort(x=sort_this, cluster_columns=cluster_columns)
-    unique_sensors = sort_this[:, 0 : unique_sensors.shape[1]]
-    counts = sort_this[:, unique_sensors.shape[1] :].flatten().astype(int)
+    sensor_counts = counts.reshape(-1, 1)
+    contingency_table = np.concatenate([unique_sensors, sensor_counts], axis=1)
+    sensors_in_contingency_table = np.arange(0, unique_sensors.shape[1], 1)
+    contingency_table = lex_sort(
+        x=contingency_table, cluster_columns=sensors_in_contingency_table
+    )
+    unique_sensors = contingency_table[:, 0 : unique_sensors.shape[1]]
+    count_part = contingency_table[:, unique_sensors.shape[1] :]
+    flattened_counts = count_part.flatten()
+    counts = flattened_counts.astype(int)
 
     # Pad unique sensor columns with NaN's up until the maximum number of
     # Same pmt-pulses. Each of padded columns represents a pulse.
@@ -124,7 +135,8 @@ def cluster_summarize_with_percentiles(
     then each row in the returned array will correspond to a DOM,
     and the time and charge for each DOM will be summarized by percentiles.
     Returned output array has dimensions
-    `[n_clusters, len(percentiles)*len(summarization_indices) + len(cluster_indices)]`
+    `[n_clusters,
+    len(percentiles)*len(summarization_indices) + len(cluster_indices)]`
 
     Args:
         x: Array to be clustered
@@ -158,3 +170,40 @@ def cluster_summarize_with_percentiles(
         )
 
     return array
+
+
+def ice_transparency(
+    z_offset: float = None, z_scaling: float = None
+) -> Tuple[interp1d, interp1d]:
+    """Return interpolation functions for optical properties of IceCube.
+
+        NOTE: The resulting interpolation functions assumes that the
+        Z-coordinate of pulse are scaled as `z = z/500`.
+        Any deviation from this scaling method results in inaccurate results.
+
+    Args:
+        z_offset: Offset to be added to the depth of the DOM.
+        z_scaling: Scaling factor to be applied to the depth of the DOM.
+
+    Returns:
+        f_scattering: Function that takes a normalized depth and returns the
+        corresponding normalized scattering length.
+        f_absorption: Function that takes a normalized depth and returns the
+        corresponding normalized absorption length.
+    """
+    # Data from page 31 of https://arxiv.org/pdf/1301.5361.pdf
+    df = pd.read_parquet(
+        os.path.join(DATA_DIR, "ice_properties/ice_transparency.parquet"),
+    )
+
+    z_offset = z_offset or -1950.0
+    z_scaling = z_scaling or 500.0
+
+    df["z_norm"] = (df["depth"] + z_offset) / z_scaling
+    df[
+        ["scattering_len_norm", "absorption_len_norm"]
+    ] = RobustScaler().fit_transform(df[["scattering_len", "absorption_len"]])
+
+    f_scattering = interp1d(df["z_norm"], df["scattering_len_norm"])
+    f_absorption = interp1d(df["z_norm"], df["absorption_len_norm"])
+    return f_scattering, f_absorption

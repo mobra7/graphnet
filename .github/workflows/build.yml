@@ -63,10 +63,19 @@ jobs:
         uses: ./.github/actions/install
         with:
           editable: true
+      - name: Print packages in pip
+        run: |
+          pip show torch
+          pip show torch-geometric
+          pip show torch-cluster
+          pip show torch-sparse
+          pip show torch-scatter
+          pip show jammy_flows
       - name: Run unit tests and generate coverage report
         run: |
-          coverage run --source=graphnet -m pytest tests/ --ignore=tests/examples/04_training
+          coverage run --source=graphnet -m pytest tests/ --ignore=tests/examples/04_training --ignore=tests/utilities 
           coverage run -a --source=graphnet -m pytest tests/examples/04_training
+          coverage run -a --source=graphnet -m pytest tests/utilities 
           coverage xml -o coverage.xml
     
       - name: Work around permission issue
@@ -108,6 +117,9 @@ jobs:
           pip show torch-cluster
           pip show torch-sparse
           pip show torch-scatter
+          pip show numpy
+
+
       - name: Run unit tests and generate coverage report
         run: |
           set -o pipefail  # To propagate exit code from pytest
@@ -119,7 +131,7 @@ jobs:
 
   build-macos:
     name: Unit tests - macOS
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python 3.8
@@ -130,7 +142,7 @@ jobs:
         uses: ./.github/actions/install
         with:
           editable: true
-          hardware: "macos"
+          hardware: "cpu"
       - name: Print packages in pip
         run: |
             pip show torch
@@ -141,5 +153,27 @@ jobs:
       - name: Run unit tests and generate coverage report
         run: |
           set -o pipefail  # To propagate exit code from pytest
-          coverage run --source=graphnet -m pytest tests/  --ignore=tests/data/ --ignore=tests/deployment/ --ignore=tests/examples/
+          coverage run --source=graphnet -m pytest tests/  --ignore=tests/data/ --ignore=tests/deployment/ --ignore=tests/examples/ --ignore=tests/utilities
+          coverage run -a --source=graphnet -m pytest tests/utilities
           coverage report -m
+
+  docs:
+    name: Documentation Compilation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install package
+        uses: ./.github/actions/install
+      - name: Build documentation
+        run: |
+          cd docs
+          make clean
+          sphinx-apidoc \
+            --module-first \
+            --separate \
+            --force \
+            -d 2 \
+            --templatedir=source/_templates/ \
+            -o source/api ../src/
+          sed -i "2s/.*/API/" source/api/graphnet.rst
+          make html

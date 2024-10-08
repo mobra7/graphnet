@@ -1,6 +1,7 @@
 """Contains `DataConverter`."""
+
 from typing import List, Union, OrderedDict, Dict, Tuple, Any, Optional, Type
-from abc import abstractmethod, ABC
+from abc import ABC
 
 from tqdm import tqdm
 import numpy as np
@@ -9,7 +10,6 @@ import multiprocessing.pool
 from multiprocessing.sharedctypes import Synchronized
 import pandas as pd
 import os
-from glob import glob
 
 
 from graphnet.utilities.decorators import final
@@ -18,6 +18,10 @@ from .readers.graphnet_file_reader import GraphNeTFileReader
 from .writers.graphnet_writer import GraphNeTWriter
 from .extractors import Extractor
 from .extractors.icecube import I3Extractor
+from .extractors.liquido import H5Extractor
+from .extractors.internal import ParquetExtractor
+from .extractors.prometheus import PrometheusExtractor
+
 from .dataclasses import I3FileSet
 
 
@@ -40,7 +44,13 @@ class DataConverter(ABC, Logger):
         file_reader: GraphNeTFileReader,
         save_method: GraphNeTWriter,
         outdir: str,
-        extractors: Union[List[Extractor], List[I3Extractor]],
+        extractors: Union[
+            List[Extractor],
+            List[I3Extractor],
+            List[ParquetExtractor],
+            List[H5Extractor],
+            List[PrometheusExtractor],
+        ],
         index_column: str = "event_no",
         num_workers: int = 1,
     ) -> None:
@@ -58,6 +68,9 @@ class DataConverter(ABC, Logger):
             num_workers: The number of CPUs used for parallel processing.
                          Defaults to 1 (no multiprocessing).
         """
+        # Base class constructor
+        super().__init__(name=__name__, class_name=self.__class__.__name__)
+
         # Member Variable Assignment
         self._file_reader = file_reader
         self._save_method = save_method
@@ -66,15 +79,14 @@ class DataConverter(ABC, Logger):
         self._index = 0
         self._output_dir = outdir
         self._output_files: List[str] = []
+        self._extension = self._save_method.file_extension
 
         # Set Extractors. Will throw error if extractors are incompatible
         # with reader.
         if not isinstance(extractors, list):
             extractors = [extractors]
-        self._file_reader.set_extractors(extractors=extractors)
 
-        # Base class constructor
-        super().__init__(name=__name__, class_name=self.__class__.__name__)
+        self._file_reader.set_extractors(extractors=extractors)
 
     @final
     def __call__(self, input_dir: Union[str, List[str]]) -> None:
@@ -92,8 +104,7 @@ class DataConverter(ABC, Logger):
         self._output_files = [
             os.path.join(
                 self._output_dir,
-                self._create_file_name(file)
-                + self._save_method.file_extension,
+                self._create_file_name(file) + self._extension,
             )
             for file in input_files
         ]
@@ -118,10 +129,9 @@ class DataConverter(ABC, Logger):
         # Iterate over files
         for _ in map_fn(
             self._process_file,
-            tqdm(input_files, unit="file(s)", colour="green"),
+            tqdm(input_files, unit=" file(s)", colour="green"),
         ):
             self.debug("processing file.")
-
         self._update_shared_variables(pool)
 
     @final
@@ -134,13 +144,27 @@ class DataConverter(ABC, Logger):
         This function is called in parallel.
         """
         # Read and apply extractors
-        data: List[OrderedDict] = self._file_reader(file_path=file_path)
+        data = self._file_reader(file_path=file_path)
 
-        # Count number of events
-        n_events = len(data)
-
-        # Assign event_no's to each event in data and transform to pd.DataFrame
-        dataframes = self._assign_event_no(data=data)
+        #
+        if isinstance(data, list):
+            # Assign event_no's to each event in data
+            # and transform to pd.DataFrame
+            n_events = len(data)
+            dataframes = self._assign_event_no(data=data)
+        elif isinstance(data, dict):
+            keys = [key for key in data.keys()]
+            counter = []
+            for key in keys:
+                assert isinstance(data[key], pd.DataFrame)
+                assert self._index_column in data[key].columns
+                counter.append(len(data[key][self._index_column]))
+            dataframes = data
+            n_events = len(
+                pd.unique(data[keys[np.argmin(counter)]][self._index_column])
+            )
+        else:
+            assert 1 == 2, "should not reach here."
 
         # Delete `data` to save memory
         del data
@@ -210,7 +234,6 @@ class DataConverter(ABC, Logger):
     ) -> int:
         """Count number of rows that features from `extractor_name` have."""
         extractor_dict = event_dict[extractor_name]
-
         try:
             # If all features in extractor_name have the same length
             # this line of code will execute without error and result
@@ -234,16 +257,12 @@ class DataConverter(ABC, Logger):
         # Get new, unique index and increment value
         if self._num_workers > 1:
             with global_index.get_lock():  # type: ignore[name-defined]
-                starting_index = global_index.value  # type: ignore[name-defined]
-                event_nos = np.arange(
-                    starting_index, starting_index + n_ids, 1
-                ).tolist()
+                start_idx = global_index.value  # type: ignore[name-defined]
+                event_nos = np.arange(start_idx, start_idx + n_ids, 1).tolist()
                 global_index.value += n_ids  # type: ignore[name-defined]
         else:
-            starting_index = self._index
-            event_nos = np.arange(
-                starting_index, starting_index + n_ids, 1
-            ).tolist()
+            start_idx = self._index
+            event_nos = np.arange(start_idx, start_idx + n_ids, 1).tolist()
             self._index += n_ids
 
         return event_nos
@@ -298,7 +317,9 @@ class DataConverter(ABC, Logger):
             self._output_files.extend(list(sorted(output_files[:])))
 
     @final
-    def merge_files(self, files: Optional[List[str]] = None) -> None:
+    def merge_files(
+        self, files: Optional[Union[List[str], str]] = None, **kwargs: Any
+    ) -> None:
         """Merge converted files.
 
             `DataConverter` will call the `.merge_files` method in the
@@ -313,6 +334,10 @@ class DataConverter(ABC, Logger):
             files_to_merge = self._output_files
         elif files is not None:
             # Proceed to merge specified by user.
+            if isinstance(files, str):
+                # We shouldn't merge a single file?
+                self.info(f"Got just a single file {files}. Merging skipped.")
+                return
             files_to_merge = files
         else:
             # Raise error
@@ -326,6 +351,5 @@ class DataConverter(ABC, Logger):
         merge_path = os.path.join(self._output_dir, "merged")
         self.info(f"Merging files to {merge_path}")
         self._save_method.merge_files(
-            files=files_to_merge,
-            output_dir=merge_path,
+            files=files_to_merge, output_dir=merge_path, **kwargs
         )

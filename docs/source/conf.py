@@ -46,6 +46,9 @@ extensions = [
     "myst_parser",
 ]
 
+# Figure references
+numfig = True
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
@@ -86,8 +89,7 @@ html_theme_options = {
     "globaltoc_includehidden": True,
     "heroes": {
         "index": (
-            "Graph neural networks for neutrino telescope event "
-            "reconstruction."
+            "GraphNeT - A Deep Learning Library for Neutrino Telescopes."
         ),
         "install": "How to install and start using GraphNeT.",
         "contribute": "How to contribute, and the practices we follow.",

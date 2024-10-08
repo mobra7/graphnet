@@ -30,6 +30,7 @@ class FEATURES:
         "t",
     ]
     KAGGLE = ["x", "y", "z", "time", "charge", "auxiliary"]
+    LIQUIDO = ["sipm_x", "sipm_y", "sipm_z", "t"]
 
 
 class TRUTH:
@@ -46,7 +47,6 @@ class TRUTH:
         "zenith",
         "pid",
         "elasticity",
-        "sim_type",
         "interaction_type",
         "interaction_time",  # Added for vertex reconstruction
         "inelasticity",
@@ -83,3 +83,13 @@ class TRUTH:
         "total_energy",
     ]
     KAGGLE = ["zenith", "azimuth"]
+    LIQUIDO = [
+        "vertex_x",
+        "vertex_y",
+        "vertex_z",
+        "zenith",
+        "azimuth",
+        "interaction_time",
+        "energy",
+        "pid",
+    ]

@@ -15,7 +15,7 @@ INSTALL_REQUIRES = [
     "configupdater",
     "dill>=0.3",
     "matplotlib>=3.5",
-    "numpy>=1.21",
+    "numpy>=1.22,<2.0",
     "pandas>=1.3",
     "pyarrow",
     "pydantic",
@@ -26,6 +26,9 @@ INSTALL_REQUIRES = [
     "timer>=0.2",
     "tqdm>=4.64",
     "wandb>=0.12",
+    "polars >=0.19",
+    "torchscale==0.2.0",
+    "h5py>= 3.7.0",
 ]
 
 EXTRAS_REQUIRE = {
@@ -47,7 +50,7 @@ EXTRAS_REQUIRE = {
         "versioneer",
     ],
     "torch": [
-        "torch>=2.1",
+        "torch>=2.1,<2.3",
         "torch-cluster>=1.6",
         "torch-scatter>=2.0",
         "torch-sparse>=0.6",

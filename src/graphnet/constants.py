@@ -19,10 +19,7 @@ TEST_SQLITE_DATA = os.path.join(
     TEST_DATA_DIR, "sqlite", _test_dataset_name, f"{_test_dataset_file}.db"
 )
 TEST_PARQUET_DATA = os.path.join(
-    TEST_DATA_DIR,
-    "parquet",
-    _test_dataset_name,
-    f"{_test_dataset_file}.parquet",
+    TEST_DATA_DIR, "parquet", _test_dataset_name, "merged"
 )
 
 # Example data
@@ -43,3 +40,4 @@ PRETRAINED_MODEL_DIR = os.path.join(
 GEOMETRY_TABLE_DIR = os.path.join(DATA_DIR, "geometry_tables")
 ICECUBE_GEOMETRY_TABLE_DIR = os.path.join(GEOMETRY_TABLE_DIR, "icecube")
 PROMETHEUS_GEOMETRY_TABLE_DIR = os.path.join(GEOMETRY_TABLE_DIR, "prometheus")
+LIQUIDO_GEOMETRY_TABLE_DIR = os.path.join(GEOMETRY_TABLE_DIR, "liquid-o")

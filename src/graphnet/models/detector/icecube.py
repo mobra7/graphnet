@@ -28,6 +28,7 @@ class IceCube86(Detector):
             "charge": self._charge,
             "rde": self._rde,
             "pmt_area": self._pmt_area,
+            "hlc": self._identity,
         }
         return feature_map
 
@@ -49,6 +50,13 @@ class IceCube86(Detector):
 
 class IceCubeKaggle(Detector):
     """`Detector` class for Kaggle Competition."""
+
+    geometry_table_path = os.path.join(
+        ICECUBE_GEOMETRY_TABLE_DIR, "icecube86.parquet"
+    )
+    xyz = ["x", "y", "z"]
+    string_id_column = "string"
+    sensor_id_column = "sensor_id"
 
     def feature_map(self) -> Dict[str, Callable]:
         """Map standardization functions to each dimension of input data."""
@@ -85,6 +93,7 @@ class IceCubeDeepCore(IceCube86):
             "charge": self._identity,
             "rde": self._rde,
             "pmt_area": self._pmt_area,
+            "hlc": self._identity,
         }
         return feature_map
 
@@ -131,6 +140,7 @@ class IceCubeUpgrade(Detector):
             "pmt_dir_y": self._identity,
             "pmt_dir_z": self._identity,
             "dom_type": self._dom_type,
+            "hlc": self._identity,
         }
 
         return feature_map

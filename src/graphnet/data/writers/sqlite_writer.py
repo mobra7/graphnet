@@ -24,6 +24,7 @@ class SQLiteWriter(GraphNeTWriter):
         self,
         merged_database_name: str = "merged.db",
         max_table_size: Optional[int] = None,
+        index_column: str = "event_no",
     ) -> None:
         """Initialize `SQLiteWriter`.
 
@@ -37,12 +38,14 @@ class SQLiteWriter(GraphNeTWriter):
                 you have many events, as tables exceeding
                 400 million rows tend to be noticably slower to query.
                 Defaults to None (All events are put into a single database).
+            index_column: Name of column that contains event id.
         """
         # Member Variables
         self._file_extension = ".db"
         self._merge_dataframes = True
         self._max_table_size = max_table_size
         self._database_name = merged_database_name
+        self._index_column = index_column
 
         # Add file extension to database name if forgotten
         if not self._database_name.endswith(self._file_extension):
@@ -83,6 +86,7 @@ class SQLiteWriter(GraphNeTWriter):
                     output_file_path,
                     default_type="FLOAT",
                     integer_primary_key=len(df) <= n_events,
+                    index_column=self._index_column,
                 )
                 saved_any = True
 
@@ -95,6 +99,7 @@ class SQLiteWriter(GraphNeTWriter):
         self,
         files: List[str],
         output_dir: str,
+        primary_key_rescue: str = "event_no",
     ) -> None:
         """SQLite-specific method for merging output files/databases.
 
@@ -109,6 +114,9 @@ class SQLiteWriter(GraphNeTWriter):
                 you have many events, as tables exceeding
                 400 million rows tend to be noticably slower to query.
                 Defaults to None (All events are put into a single database.)
+            primary_key_rescue: The name of the columns on which the primary
+                key is constructed. This will only be used if it is not
+                possible to infer the primary key name.
         """
         # Warnings
         if self._max_table_size:
@@ -120,10 +128,10 @@ class SQLiteWriter(GraphNeTWriter):
 
         # Set variables
         self._partition_count = 1
+        self._primary_key_rescue = primary_key_rescue
 
         # Construct full database path
         database_path = os.path.join(output_dir, self._database_name)
-        print(database_path)
         # Start merging if files are given
         if len(files) > 0:
             os.makedirs(output_dir, exist_ok=True)
@@ -158,9 +166,17 @@ class SQLiteWriter(GraphNeTWriter):
 
         # Merge temporary databases into newly created one
         for file_count, input_file in tqdm(enumerate(files), colour="green"):
-
             # Extract table names and index column name in database
-            tables, primary_key = get_primary_keys(database=input_file)
+            try:
+                tables, primary_key = get_primary_keys(database=input_file)
+                if primary_key is None:
+                    primary_key = self._primary_key_rescue
+            except AssertionError as e:
+                if "No tables found in database." in str(e):
+                    self.warning(f"Database {input_file} is empty. Skipping.")
+                    continue
+                else:
+                    raise e
 
             for table_name in tables.keys():
                 # Extract all data in the table from the given database
