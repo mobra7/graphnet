@@ -14,7 +14,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 
 
-model_path = './vMF_IS_10_04'
+model_path = './SNRE_10_02'
 freedom = pd.read_pickle(f'{model_path}/performance.pkl')
 dynedge_model = Model.load(f'./dynedge_baseline_3/model.pth')
 
@@ -118,7 +118,7 @@ def angle_model(az_true, zen_true, az_pred, zen_pred):
 df['SBI'] = angle_model(freedom['truth_az'], freedom['truth_ze'], freedom['max_llh_az'], freedom['max_llh_ze'])
 df['spline'] = angle_model(freedom['truth_az'], freedom['truth_ze'], freedom['spline_az'], freedom['spline_ze'])
 
-bin_edges = np.linspace(0, 20000, 21)
+bin_edges = np.logspace(2, 7, 15)
 bin_centers = [0.5 * (bin_edges[i] + bin_edges[i+1]) for i in range(len(bin_edges) - 1)]
 
 df['energy_bin'] = pd.cut(dynedge['energy'], bins=bin_edges)
@@ -173,8 +173,9 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
     ax1.set_xlabel('Energy [GeV]')
     ax1.set_ylabel('Opening Angle [deg]')
     ax1.set_title(title)
-    ax1.set_ylim(0, 6)
-    ax1.set_xlim(0, bin_edges[-1])
+    ax1.set_xlim(bin_edges[0], bin_edges[-1])
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
     ax1.tick_params(axis='x', rotation=45)
     ax1.legend(loc='upper right')
     ax1.grid(True)
@@ -184,16 +185,16 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
     ax2.set_ylabel('Count')
     ax2.set_yscale('log')
 
-    ax1.set_xticks(bin_edges[::2])
-    ax1.set_xticklabels([f'{int(edge):,}' for edge in bin_edges[::2]])
+    #ax1.set_xticks(bin_edges[::2])
+    #ax1.set_xticklabels([f'{int(edge):,}' for edge in bin_edges[::2]])
 
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
 
 # Call the function with both columns
-plot_percentiles_comparison_with_bootstrap(df, ['dynedge', 'SBI'], 
-                                           f'Comparison of dynedge and SBI Method with 95%-Bands', 
+plot_percentiles_comparison_with_bootstrap(df, ['dynedge', 'SBI', 'spline'], 
+                                           f'dynedge, SBI and spline with 95%-Bands', 
                                            f'{model_path}/comparison_with_uncertainties.pdf')
 
 print('Model mean opening angle: ', np.degrees(np.mean(df['SBI'])))
