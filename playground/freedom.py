@@ -3,12 +3,12 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="2,3,1,0"
+#os.environ["CUDA_VISIBLE_DEVICES"]="2,3,1,0"
 from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
 
-import healpy as hp
+
 import math
 import numpy as np
 import pandas as pd
@@ -41,6 +41,7 @@ from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import freedom_BinaryClassificationTask
 from graphnet.training.callbacks import PiecewiseLinearLR, ProgressBar
+from graphnet.models.graphs.nodes import IceMixNodes
 
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
@@ -49,6 +50,7 @@ from graphnet.utilities.config import Configurable, DatasetConfig,DatasetConfigS
 from graphnet.utilities.logging import Logger
 
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
+torch.set_float32_matmul_precision('medium')
 
 
 
@@ -625,13 +627,13 @@ class freedom_Dataset(
         """Return dictionary of  labels, to be added as graph attributes."""
         if "pid" in truth_dict.keys():
             abs_pid = abs(truth_dict["pid"])
-            sim_type = truth_dict["sim_type"]
+            #sim_type = truth_dict["sim_type"]
 
             labels_dict = {
                 self._index_column: truth_dict[self._index_column],
                 "muon": int(abs_pid == 13),
                 "muon_stopped": int(truth_dict.get("stopped_muon") == 1),
-                "noise": int((abs_pid == 1) & (sim_type != "data")),
+                #"noise": int((abs_pid == 1) & (sim_type != "data")),
                 "neutrino": int(
                     (abs_pid != 13) & (abs_pid != 1)
                 ),  # @TODO: `abs_pid in [12,14,16]`?
@@ -751,14 +753,16 @@ class freedom_SQLiteDataset(freedom_Dataset):
         )
         self._close_connection()
 
-        # Filter based on pulse count
-        conn = sqlite3.connect(self._path)
-        query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+        # # Filter based on pulse count
+        # conn = sqlite3.connect(self._path)
+        # query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 1
-        max_count = 1000
-        indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
-        print('done')
+        # min_count = 1
+        # max_count = 1000
+        # indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
+        # print('done')
+
+        indices = indices.values.ravel().tolist()
         return [(num, 0) for num in indices] + [(num, 1) for num in indices]
 
     def _get_event_index(
@@ -1251,17 +1255,29 @@ def main(
         "fit": {
             "gpus": gpus,
             "max_epochs": max_epochs,
+            "distribution_strategy": "ddp_find_unused_parameters_true",
         },
+        
     }
 
-    archive = os.path.join(EXAMPLE_OUTPUT_DIR, "train_model_without_configs")
-    run_name = "dynedge_{}_example".format(config["target"])
+
     if wandb:
         # Log configuration to W&B
         wandb_logger.experiment.config.update(config)
 
     # Define graph representation
-    graph_definition = KNNGraph(detector=IceCube86())
+    graph_definition = KNNGraph(
+        detector=IceCube86(),
+        node_definition=IceMixNodes(
+            input_feature_names=features,
+            max_pulses= 1024,
+            z_name="dom_z",
+            hlc_name='hlc',
+            add_ice_properties=False,
+        ),
+        input_feature_names=features,
+        columns=[0, 1, 2, 3],
+    )
 
     # add your labels
 
@@ -1286,9 +1302,9 @@ def main(
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
     
-    pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
+    pretrained_model = Model.load('/ptmp/mpp/mbranden/graphnet/playground/icemix_pretrain/model.pth')
 
-    backbone = pretrained_dynedge.backbone
+    backbone = pretrained_model.backbone
     for i,param in enumerate(backbone.parameters()):
         param.requires_grad = False
         if i == len(list(backbone.parameters())) - 3:
@@ -1310,7 +1326,7 @@ def main(
         scrambled_target="scrambled_direction",
         tasks=[task],
         optimizer_class=Adam,
-        optimizer_kwargs={"lr": 1e-05, "eps": 1e-3},
+        optimizer_kwargs={"lr": 1e-03, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
         scheduler_kwargs={'patience': 4, 'factor': 0.1},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
@@ -1354,6 +1370,16 @@ def main(
     assert isinstance(additional_attributes, list)  # mypy
     
 
+    # Save full model (including weights) to .pth file - not version safe
+    # Note: Models saved as .pth files in one version of graphnet
+    #       may not be compatible with a different version of graphnet.
+    model.save(f"{save_path}/model.pth")
+
+    # Save model config and state dict - Version safe save method.
+    # This method of saving models is the safest way.
+    model.save_state_dict(f"{save_path}/state_dict.pth")
+    model.save_config(f"{save_path}/model_config.yml")
+
     results = model.predict_as_dataframe(
         validation_dataloader,
         additional_attributes=additional_attributes + ["event_no"],
@@ -1365,31 +1391,22 @@ def main(
     # Save results as .csv
     results.to_csv(f"{save_path}/results.csv")
 
-    # Save full model (including weights) to .pth file - not version safe
-    # Note: Models saved as .pth files in one version of graphnet
-    #       may not be compatible with a different version of graphnet.
-    model.save(f"{save_path}/model.pth")
-
-    # Save model config and state dict - Version safe save method.
-    # This method of saving models is the safest way.
-    model.save_state_dict(f"{save_path}/state_dict.pth")
-    model.save_config(f"{save_path}/model_config.yml")
-
 if __name__ == "__main__":
 
     # settings
-    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_14'
+    # path = "/scratch/users/allorana/northern_sqlite/old_files/dev_northern_tracks_muon_labels_v3_part_1.db"
+    path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_1.db"
+    save_path = '/ptmp/mpp/mbranden/graphnet/playground/icemix_10_23'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
-    gpus = [1]
+    gpus = [2,3]
     max_epochs = 250
-    early_stopping_patience = 12
-    batch_size = 500
+    early_stopping_patience = 10
+    batch_size = 25
     num_workers = 30
-    wandb =  True
+    wandb =  False
 
     main(
             path=path,

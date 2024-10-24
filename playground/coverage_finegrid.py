@@ -6,8 +6,6 @@ from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
                     Union, cast)
 from tqdm import tqdm
 
-import healpy as hp
-from healpy.newvisufunc import projview, newprojplot
 import math
 import numpy as np
 import pandas as pd
@@ -621,13 +619,13 @@ class freedom_Dataset(
         """Return dictionary of  labels, to be added as graph attributes."""
         if "pid" in truth_dict.keys():
             abs_pid = abs(truth_dict["pid"])
-            sim_type = truth_dict["sim_type"]
+            #sim_type = truth_dict["sim_type"]
 
             labels_dict = {
                 self._index_column: truth_dict[self._index_column],
                 "muon": int(abs_pid == 13),
                 "muon_stopped": int(truth_dict.get("stopped_muon") == 1),
-                "noise": int((abs_pid == 1) & (sim_type != "data")),
+                #"noise": int((abs_pid == 1) & (sim_type != "data")),
                 "neutrino": int(
                     (abs_pid != 13) & (abs_pid != 1)
                 ),  # @TODO: `abs_pid in [12,14,16]`?
@@ -993,17 +991,18 @@ class ScrambledDirection(Label):
         return val
 
 
-path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
+path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_full_part_2.db"
 pulsemap = 'InIcePulses'
 target = 'scrambled_class'
 truth_table = 'truth'
-gpus = [0]
+gpus = [0,1]
 max_epochs = 30
 early_stopping_patience = 5
-batch_size = 100
+batch_size = 50
 num_workers = 30
 wandb =  False
 device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')
 print('GPU: ',torch.cuda.is_available())
 print(torch.cuda.current_device())
 features = FEATURES.ICECUBE86
@@ -1016,7 +1015,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model_path = './vMF_IS_10_04'
+model_path = './vMF_IS_10_15'
 model = Model.load(f'{model_path}/model.pth')
 #model = Model.load('./vMF_IS_09_13/model.pth')
 #checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
@@ -1032,7 +1031,7 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     truth_table=truth_table,
     labels= labels,
     selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 1000,
+    no_of_events = 10000,
     shuffle = False,
     seed = 6
 )
