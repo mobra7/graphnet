@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,2,1,0"
+# os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 from typing import (
     Any,
     Callable,
@@ -16,8 +16,6 @@ from typing import (
 )
 from tqdm import tqdm
 
-import healpy as hp
-from healpy.newvisufunc import projview, newprojplot
 import math
 import numpy as np
 import pandas as pd
@@ -32,6 +30,7 @@ from torch_geometric.data import Data
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
 from sklearn.model_selection import train_test_split
+from graphnet.data.utilities.sqlite_utilities import query_database
 
 from graphnet.constants import (
     EXAMPLE_DATA_DIR,
@@ -57,10 +56,11 @@ from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import (
     freedom_BinaryClassificationTask,
 )
+from graphnet.models.graphs.nodes import IceMixNodes
 from graphnet.training.callbacks import PiecewiseLinearLR
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
-from graphnet.training.utils import collate_fn
+from graphnet.training.utils import collate_fn, make_dataloader
 from graphnet.utilities.config import (
     Configurable,
     DatasetConfig,
@@ -69,8 +69,8 @@ from graphnet.utilities.config import (
 from graphnet.utilities.logging import Logger
 from freedom import LikelihoodFreeModel, disc_NeuralNetwork
 
+
 torch.multiprocessing.set_sharing_strategy("file_descriptor")
-torch.set_float32_matmul_precision("medium")
 
 
 class freedom_Dataset(
@@ -645,13 +645,13 @@ class freedom_Dataset(
         """Return dictionary of  labels, to be added as graph attributes."""
         if "pid" in truth_dict.keys():
             abs_pid = abs(truth_dict["pid"])
-            sim_type = truth_dict["sim_type"]
+            # sim_type = truth_dict["sim_type"]
 
             labels_dict = {
                 self._index_column: truth_dict[self._index_column],
                 "muon": int(abs_pid == 13),
                 "muon_stopped": int(truth_dict.get("stopped_muon") == 1),
-                "noise": int((abs_pid == 1) & (sim_type != "data")),
+                # "noise": int((abs_pid == 1) & (sim_type != "data")),
                 "neutrino": int(
                     (abs_pid != 13) & (abs_pid != 1)
                 ),  # @TODO: `abs_pid in [12,14,16]`?
@@ -775,19 +775,14 @@ class freedom_SQLiteDataset(freedom_Dataset):
         self._close_connection()
 
         # Filter based on pulse count
-        conn = sqlite3.connect(self._path)
+        # conn = sqlite3.connect(self._path)
 
-        query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
+        # query = f"SELECT event_no FROM {self._pulsemaps[0]} WHERE event_no IN ({','.join(map(str, indices))}) GROUP BY event_no HAVING COUNT(*) BETWEEN ? AND ?"
 
-        min_count = 1
-        max_count = 1000
-        indices = [
-            event_no
-            for event_no, in conn.execute(
-                query, (min_count, max_count)
-            ).fetchall()
-        ]
-
+        # min_count = 1
+        # max_count = 1000
+        # indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
+        indices = indices["event_no"].to_list()
         if return_type == "scrambled":
             return [(num, 0) for num in indices]
         elif return_type == "unscrambled":
@@ -1027,24 +1022,44 @@ class ScrambledDirection(Label):
         return val
 
 
-# path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
-path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
+path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_2.db"
+# path = "/scratch/users/allorana/northern_sqlite/old_files/dev_northern_tracks_muon_labels_v3_part_2.db"
 pulsemap = "InIcePulses"
 target = "scrambled_class"
 truth_table = "truth"
 gpus = [0]
 max_epochs = 30
 early_stopping_patience = 5
-batch_size = 50
+batch_size = 10
 num_workers = 30
 wandb = False
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("GPU: ", torch.cuda.is_available())
 print(torch.cuda.current_device())
-features = FEATURES.ICECUBE86
+features = [
+    "dom_x",
+    "dom_y",
+    "dom_z",
+    "dom_time",
+    "charge",
+    # "rde",
+    # "pmt_area",
+    "hlc",
+]
 truth = TRUTH.ICECUBE86
 
-graph_definition = KNNGraph(detector=IceCube86())
+graph_definition = KNNGraph(
+    detector=IceCube86(),
+    node_definition=IceMixNodes(
+        input_feature_names=features,
+        max_pulses=1024,
+        z_name="dom_z",
+        hlc_name="hlc",
+        add_ice_properties=False,
+    ),
+    input_feature_names=features,
+    columns=[0, 1, 2, 3],
+)
 
 labels = {
     "scrambled_direction": ScrambledDirection(
@@ -1052,11 +1067,15 @@ labels = {
     )
 }
 
-model_path = "./vMF_IS_10_15"
+model_path = "./icemix_10_23"
 model = Model.load(f"{model_path}/model.pth")
 # model = Model.load('./vMF_IS_09_13/model.pth')
 # checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
 # model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
+events = query_database(database=path, query="select event_no from truth")
+selection = events["event_no"].to_list()
+selection = [(ev, 1) for ev in selection]
+
 
 skymap_dataloader = make_freedom_dataloader(
     db=path,
@@ -1068,9 +1087,9 @@ skymap_dataloader = make_freedom_dataloader(
     num_workers=num_workers,
     truth_table=truth_table,
     labels=labels,
-    selection=None,  # either None, str, or List[(event_no,scramble_class)]
-    no_of_events=10,
+    selection=selection,
     shuffle=False,
+    no_of_events=100000,
     seed=6,
 )
 
@@ -1091,8 +1110,8 @@ def coverage(
     truth_energy_list = []
     event_nos_list = []
 
-    zenith = np.linspace(0, np.pi, 75)
-    azimuth = np.linspace(0, 2 * np.pi, 75)
+    zenith = np.linspace(0, np.pi, 100)
+    azimuth = np.linspace(0, 2 * np.pi, 100)
     ze, az = np.meshgrid(zenith, azimuth)
     zenith = torch.tensor(ze.flatten())
     azimuth = torch.tensor(az.flatten())
@@ -1108,7 +1127,12 @@ def coverage(
 
     max_ze = []
     max_az = []
+    truth_grid_max_ze = []
+    truth_grid_max_az = []
+    grid_max_ze = []
+    grid_max_az = []
     truth_pred_list = []
+    from_true_grid = np.empty(shape=0)
 
     for d in tqdm(data):
         x_list = []
@@ -1172,10 +1196,10 @@ def coverage(
 
             # Create a finer grid around the best prediction direction
             fine_zenith = np.linspace(
-                best_zenith - 0.1, best_zenith + 0.1, 100
+                best_zenith - 0.1, best_zenith + 0.1, 120
             )
             fine_azimuth = np.linspace(
-                best_azimuth - 0.1, best_azimuth + 0.1, 100
+                best_azimuth - 0.1, best_azimuth + 0.1, 120
             )
             fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
             fine_ze_all = np.append(fine_ze_all, fine_ze.flatten())
@@ -1204,9 +1228,37 @@ def coverage(
             )  # Shape: (num_events * fine_npix, feature_dim + 3)
             fine_x_all = torch.cat([fine_x_all, fine_x], dim=0).to(device)
 
+        # Pass both latent vec and scrambled target to discriminator for finer grid
+        fine_x = model._discriminator(fine_x_all).to(device)
+
+        # Pass to task for finer grid
+        fine_task_preds = [task(fine_x) for task in model._tasks]
+        fine_pred_chunk = fine_task_preds[0].chunk(
+            events_count
+        )  # Only takes first task for now
+        fine_preds = np.array(
+            [
+                event_pred.detach().cpu().numpy()
+                for event_pred in fine_pred_chunk
+            ]
+        )
+        fine_max_log_skymap = []
+        max_id_fine = []
+        for j in range(len(fine_preds)):
+            fine_log_skymap = np.log(fine_preds[j])
+            fine_max_log_skymap.append(np.max(fine_log_skymap))
+            max_id_fine.append(np.argmax(fine_log_skymap))
+            len_log_skymap = len(fine_log_skymap)
+
+        fine_preds = []
+        fine_log_skymap = []
+        # Update max_log with finer predictions
+
+        fine_x_all = torch.empty((0, dims[1])).to(device)
+        for k in range(len(preds)):
             # do same for small grid around truth
-            actual_zenith = d["zenith"].cpu().numpy()[i]
-            actual_azimuth = d["azimuth"].cpu().numpy()[i]
+            actual_zenith = d["zenith"].cpu().numpy()[k]
+            actual_azimuth = d["azimuth"].cpu().numpy()[k]
 
             # Create a finer grid around the actual truth direction
             fine_zenith = np.linspace(
@@ -1228,7 +1280,7 @@ def coverage(
 
             fine_npix = fine_directions.shape[0]
 
-            fine_x_list = fine_npix * [bb[i]]
+            fine_x_list = fine_npix * [bb[k]]
             fine_x = torch.stack(fine_x_list)
             fine_y = (
                 torch.stack([fine_directions])
@@ -1241,7 +1293,6 @@ def coverage(
             )  # Shape: (num_events * fine_npix, feature_dim + 3)
             fine_x_all = torch.cat([fine_x_all, fine_x], dim=0).to(device)
 
-        # Pass both latent vec and scrambled target to discriminator for finer grid
         fine_x = model._discriminator(fine_x_all).to(device)
 
         # Pass to task for finer grid
@@ -1249,21 +1300,61 @@ def coverage(
         fine_pred_chunk = fine_task_preds[0].chunk(
             events_count
         )  # Only takes first task for now
-        fine_preds = np.array(
+        fine_preds_truth = np.array(
             [
                 event_pred.detach().cpu().numpy()
                 for event_pred in fine_pred_chunk
             ]
         )
 
-        # Update max_log with finer predictions
-        for j in range(len(fine_preds)):
-            fine_log_skymap = np.log(fine_preds[j])
-            fine_max_log_skymap = np.max(fine_log_skymap)
-            max_log.extend([fine_max_log_skymap])
-            max_id = np.argmax(fine_log_skymap)
-            max_ze.append(fine_ze_all[j * len(fine_log_skymap) + max_id])
-            max_az.append(fine_az_all[j * len(fine_log_skymap) + max_id])
+        for j in range(len(fine_preds_truth)):
+            from_true_grid = np.append(from_true_grid, 0)
+            fine_truth_log_skymap = np.log(fine_preds_truth[j])
+            fine_truth_max_log_skymap = np.max(fine_truth_log_skymap)
+            grid_max_ze.append(
+                fine_ze_all[j * len_log_skymap + max_id_fine[j]]
+            )
+            grid_max_az.append(
+                fine_az_all[j * len_log_skymap + max_id_fine[j]]
+            )
+            truth_grid_max_ze.append(
+                fine_ze_all[
+                    len(fine_preds_truth) * len_log_skymap
+                    + j * len(fine_truth_log_skymap)
+                    + np.argmax(fine_truth_log_skymap)
+                ]
+            )
+            truth_grid_max_az.append(
+                fine_az_all[
+                    len(fine_preds_truth) * len_log_skymap
+                    + j * len(fine_truth_log_skymap)
+                    + np.argmax(fine_truth_log_skymap)
+                ]
+            )
+
+            if fine_max_log_skymap[j] > fine_truth_max_log_skymap:
+                max_log.extend([fine_max_log_skymap[j]])
+                max_id = max_id_fine[j]
+                max_ze.append(fine_ze_all[j * len_log_skymap + max_id])
+                max_az.append(fine_az_all[j * len_log_skymap + max_id])
+            else:
+                max_log.extend([fine_truth_max_log_skymap])
+                max_id = np.argmax(fine_truth_log_skymap)
+                max_ze.append(
+                    fine_ze_all[
+                        len(fine_preds_truth) * len_log_skymap
+                        + j * len(fine_truth_log_skymap)
+                        + max_id
+                    ]
+                )
+                max_az.append(
+                    fine_az_all[
+                        len(fine_preds_truth) * len_log_skymap
+                        + j * len(fine_truth_log_skymap)
+                        + max_id
+                    ]
+                )
+                from_true_grid[-1] = 1
 
         fine_az_all = []
         fine_ze_all = []
@@ -1282,6 +1373,11 @@ def coverage(
         max_az,
         truth_energy_list,
         event_nos_list,
+        from_true_grid,
+        grid_max_az,
+        grid_max_ze,
+        truth_grid_max_az,
+        truth_grid_max_ze,
     )
 
 
@@ -1294,13 +1390,20 @@ def coverage(
     max_az,
     truth_energy,
     event_nos,
+    from_true_grid,
+    grid_max_az,
+    grid_max_ze,
+    truth_grid_max_az,
+    truth_grid_max_ze,
 ) = coverage(model, skymap_dataloader)
+
+print("# from true grid: ", np.sum(from_true_grid))
+
 truth_log = np.log(np.concatenate(truth_preds).flatten())
 
 delta_log = np.array(max_log) - np.array(truth_log)
-print("truth log: ", truth_log)
-print("max log: ", max_log)
-np.save(f"{model_path}/delta_log_finegrid_trash.npy", delta_log)
+
+np.save(f"{model_path}/delta_log_finegrid.npy", delta_log)
 
 
 sqliteConnection = sqlite3.connect(path)
@@ -1326,10 +1429,15 @@ data = {
     "truth_az": truth_azimuth,
     "energy": truth_energy,
     "event_no": event_nos,
+    "from_true_grid": from_true_grid,
+    "grid_max_az": grid_max_az,
+    "grid_max_ze": grid_max_ze,
+    "truth_grid_max_az": truth_grid_max_az,
+    "truth_grid_max_ze": truth_grid_max_ze,
 }
 
 df = pd.DataFrame(data)
-df.to_pickle(f"{model_path}/performance_trash.pkl")
+df.to_pickle(f"{model_path}/performance_4.pkl")
 
 # performance_events = pd.DataFrame({'event_no': event_nos})
 # performance_events.to_pickle(f'{model_path}/performance_events.pkl')

@@ -25,10 +25,11 @@ class NormalizingFlow(EasySyntax):
     def __init__(
         self,
         graph_definition: GraphDefinition,
-        target_labels: str,
+        target_labels: Union[str, List[str]],
         backbone: GNN = None,
         condition_on: Union[str, List[str], None] = None,
         flow_layers: str = "gggt",
+        target_norm: float = 1000.0,
         optimizer_class: Type[torch.optim.Optimizer] = Adam,
         optimizer_kwargs: Optional[Dict] = None,
         scheduler_class: Optional[type] = None,
@@ -95,6 +96,7 @@ class NormalizingFlow(EasySyntax):
             hidden_size=hidden_size,
             flow_layers=flow_layers,
             target_labels=target_labels,
+            target_norm=target_norm,
         )
 
         # Base class constructor
@@ -122,6 +124,11 @@ class NormalizingFlow(EasySyntax):
             if self.backbone is not None:
                 x = self._backbone(d)
                 x = self._norm(x)
+                if torch.any(torch.isnan(x)):
+                    print(self._backbone(d))
+                    raise ValueError(
+                        "NaN values found in tensor x after normalization."
+                    )
             elif self._condition_on is not None:
                 assert isinstance(self._condition_on, list)
                 x = get_fields(data=d, fields=self._condition_on)

@@ -28,7 +28,7 @@ class IceCube86(Detector):
             "charge": self._charge,
             "rde": self._rde,
             "pmt_area": self._pmt_area,
-            "hlc": self._identity,
+            # "hlc": self._identity,
         }
         return feature_map
 

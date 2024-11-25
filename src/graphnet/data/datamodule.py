@@ -172,7 +172,7 @@ class GraphNeTDataModule(pl.LightningDataModule, Logger):
             stage: lightning stage. Either "fit, validate, test, predict"
         """
         # Sanity Checks
-        self._validate_dataset_class()
+        # self._validate_dataset_class()
         self._validate_dataset_args()
         self._validate_dataloader_args()
 

@@ -4,6 +4,7 @@ from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.data.constants import FEATURES, TRUTH
 from graphnet.models.detector.icecube import IceCube86
 from graphnet.training.labels import Direction
+from graphnet.models.graphs.nodes import IceMixNodes
 
 import pandas as pd
 import numpy as np
@@ -14,87 +15,12 @@ import os
 
 
 model_path = "./icemix_10_23"
-freedom = pd.read_pickle(f"{model_path}/performance.pkl")
-dynedge_model = Model.load(f"./dynedge_baseline/model.pth")
-
+freedom = pd.read_pickle(f"{model_path}/performance_3.pkl")
+print(freedom.head())
 # selection = list(pd.read_pickle(f'{model_path}/performance_events.pkl')['event_no'])
-selection = list(freedom["event_no"])
-
-path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
-pulsemap = "InIcePulses"
-target = "scrambled_class"
-truth_table = "truth"
-gpus = [0]
-max_epochs = 30
-early_stopping_patience = 5
-batch_size = 500
-num_workers = 30
-wandb = False
-features = FEATURES.ICECUBE86
-truth = TRUTH.ICECUBE86
-graph_definition = KNNGraph(detector=IceCube86())
-
-dataloader = make_dataloader(
-    db=path,
-    graph_definition=graph_definition,
-    pulsemaps=pulsemap,
-    features=features,
-    truth=truth,
-    batch_size=batch_size,
-    num_workers=num_workers,
-    truth_table=truth_table,
-    selection=selection,
-    labels={"direction": Direction()},
-    shuffle=False,
-)
-
-
-additional_attributes = ["zenith", "azimuth", "event_no", "energy"]
-prediction_columns = [
-    "dir_x_pred",
-    "dir_y_pred",
-    "dir_z_pred",
-]
-
-assert isinstance(additional_attributes, list)
-
-dynedge = dynedge_model.predict_as_dataframe(
-    dataloader,
-    additional_attributes=additional_attributes,
-    prediction_columns=prediction_columns,
-    gpus=[1],
-)
-
-
-def angle_dynedge(az_true, zen_true, x_pred, y_pred, z_pred):
-    sa1 = np.sin(az_true)
-    ca1 = np.cos(az_true)
-    sz1 = np.sin(zen_true)
-    cz1 = np.cos(zen_true)
-
-    zen_pred = np.arccos(z_pred)
-
-    sa2 = y_pred / np.sin(zen_pred)
-    ca2 = x_pred / np.sin(zen_pred)
-    sz2 = np.sin(zen_pred)
-    cz2 = z_pred
-
-    # scalar product of the two cartesian vectors (x = sz*ca, y = sz*sa, z = cz)
-    scalar_prod = sz1 * sz2 * (ca1 * ca2 + sa1 * sa2) + (cz1 * cz2)
-
-    scalar_prod = np.clip(scalar_prod, -1, 1)
-
-    return np.abs(np.arccos(scalar_prod))
 
 
 df = pd.DataFrame()
-df["dynedge"] = angle_dynedge(
-    dynedge["azimuth"],
-    dynedge["zenith"],
-    dynedge["dir_x_pred"],
-    dynedge["dir_y_pred"],
-    dynedge["dir_z_pred"],
-)
 
 
 def angle_model(az_true, zen_true, az_pred, zen_pred):
@@ -128,16 +54,22 @@ df["spline"] = angle_model(
     freedom["spline_az"],
     freedom["spline_ze"],
 )
+df["truth grid vs. non truth grid"] = angle_model(
+    freedom["grid_max_az"],
+    freedom["grid_max_ze"],
+    freedom["truth_grid_max_az"],
+    freedom["truth_grid_max_ze"],
+)
 
 bin_edges = np.logspace(2, 7, 15)
 bin_centers = [
     0.5 * (bin_edges[i] + bin_edges[i + 1]) for i in range(len(bin_edges) - 1)
 ]
 
-df["energy_bin"] = pd.cut(dynedge["energy"], bins=bin_edges)
-df["azimuth"] = pd.cut(dynedge["azimuth"], bins=bin_edges)
+df["energy_bin"] = pd.cut(freedom["energy"], bins=bin_edges)
+df["from_true_grid"] = freedom["from_true_grid"]
 
-percentiles = [16, 50, 84]
+percentiles = [50]
 
 
 def bootstrap_percentiles(group, n_bootstrap=1000):
@@ -180,7 +112,8 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
         base_color = colors[i % len(colors)]
 
         percentiles_df = (
-            df.groupby("energy_bin")[column]
+            df[df["from_true_grid"] == 0]
+            .groupby("energy_bin")[column]
             .apply(bootstrap_percentiles)
             .reset_index()
         )
@@ -199,7 +132,36 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
                 linestyle=linestyles[j],
                 linewidth=2,
                 color=base_color,
-                label=f"{column} {p}th Percentile",
+                label=f"{column} Non truth grid {p}th Percentile",
+            )
+            ax1.fill_between(
+                bin_centers, lower, upper, alpha=0.3, color=base_color
+            )
+
+        base_color = colors[i + 3 % len(colors)]
+
+        percentiles_df = (
+            df[df["from_true_grid"] == 1]
+            .groupby("energy_bin")[column]
+            .apply(bootstrap_percentiles)
+            .reset_index()
+        )
+        percentiles_df = percentiles_df.pivot(
+            index="energy_bin", columns="level_1", values=column
+        ).reset_index()
+
+        for j, p in enumerate(percentiles):
+            median = np.degrees(percentiles_df[f"{p}_median"])
+            lower = np.degrees(percentiles_df[f"{p}_lower"])
+            upper = np.degrees(percentiles_df[f"{p}_upper"])
+
+            ax1.plot(
+                bin_centers,
+                median,
+                linestyle=linestyles[j],
+                linewidth=2,
+                color=base_color,
+                label=f"{column} Truth grid {p}th Percentile",
             )
             ax1.fill_between(
                 bin_centers, lower, upper, alpha=0.3, color=base_color
@@ -217,7 +179,7 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
 
     ax2 = ax1.twinx()
     hist_data, hist_bins, _ = ax2.hist(
-        dynedge["energy"],
+        freedom["energy"],
         bins=bin_edges,
         alpha=0.3,
         color="gray",
@@ -237,10 +199,9 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
 # Call the function with both columns
 plot_percentiles_comparison_with_bootstrap(
     df,
-    ["dynedge", "icemix_SBI", "spline"],
-    f"dynedge, icemix SBI and spline with 95%-Bands",
-    f"{model_path}/comparison_with_uncertainties.pdf",
+    ["SBI", "truth grid vs. non truth grid"],
+    f"Comparison of truth grid and non truth grid points",
+    f"{model_path}/grid_comparison_2.pdf",
 )
 
 print("Model mean opening angle: ", np.degrees(np.mean(df["SBI"])))
-print("Baseline mean opening angle: ", np.degrees(np.mean(df["dynedge"])))

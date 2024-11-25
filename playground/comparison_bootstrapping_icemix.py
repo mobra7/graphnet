@@ -4,6 +4,7 @@ from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.data.constants import FEATURES, TRUTH
 from graphnet.models.detector.icecube import IceCube86
 from graphnet.training.labels import Direction
+from graphnet.models.graphs.nodes import IceMixNodes
 
 import pandas as pd
 import numpy as np
@@ -15,24 +16,36 @@ import os
 
 model_path = "./icemix_10_23"
 freedom = pd.read_pickle(f"{model_path}/performance.pkl")
-dynedge_model = Model.load(f"./dynedge_baseline/model.pth")
-
+dynedge_model = Model.load(f"./icemix_pretrain/model.pth")
+print(freedom.head())
 # selection = list(pd.read_pickle(f'{model_path}/performance_events.pkl')['event_no'])
 selection = list(freedom["event_no"])
 
-path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
+# path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_2.db"
+path = "/scratch/users/allorana/northern_sqlite/old_files/dev_northern_tracks_muon_labels_v3_part_2.db"
 pulsemap = "InIcePulses"
 target = "scrambled_class"
 truth_table = "truth"
 gpus = [0]
 max_epochs = 30
 early_stopping_patience = 5
-batch_size = 500
+batch_size = 20
 num_workers = 30
 wandb = False
 features = FEATURES.ICECUBE86
 truth = TRUTH.ICECUBE86
-graph_definition = KNNGraph(detector=IceCube86())
+graph_definition = KNNGraph(
+    detector=IceCube86(),
+    node_definition=IceMixNodes(
+        input_feature_names=features,
+        max_pulses=1024,
+        z_name="dom_z",
+        hlc_name="hlc",
+        add_ice_properties=False,
+    ),
+    input_feature_names=features,
+    columns=[0, 1, 2, 3],
+)
 
 dataloader = make_dataloader(
     db=path,
@@ -54,6 +67,7 @@ prediction_columns = [
     "dir_x_pred",
     "dir_y_pred",
     "dir_z_pred",
+    "kappa_pred",
 ]
 
 assert isinstance(additional_attributes, list)
@@ -61,8 +75,7 @@ assert isinstance(additional_attributes, list)
 dynedge = dynedge_model.predict_as_dataframe(
     dataloader,
     additional_attributes=additional_attributes,
-    prediction_columns=prediction_columns,
-    gpus=[1],
+    gpus=[0],
 )
 
 
@@ -88,7 +101,7 @@ def angle_dynedge(az_true, zen_true, x_pred, y_pred, z_pred):
 
 
 df = pd.DataFrame()
-df["dynedge"] = angle_dynedge(
+df["icemix"] = angle_dynedge(
     dynedge["azimuth"],
     dynedge["zenith"],
     dynedge["dir_x_pred"],
@@ -237,10 +250,10 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
 # Call the function with both columns
 plot_percentiles_comparison_with_bootstrap(
     df,
-    ["dynedge", "icemix_SBI", "spline"],
-    f"dynedge, icemix SBI and spline with 95%-Bands",
+    ["icemix", "SBI", "spline"],
+    f"icemix, icemix SBI and spline with 95%-Bands",
     f"{model_path}/comparison_with_uncertainties.pdf",
 )
 
 print("Model mean opening angle: ", np.degrees(np.mean(df["SBI"])))
-print("Baseline mean opening angle: ", np.degrees(np.mean(df["dynedge"])))
+print("Baseline mean opening angle: ", np.degrees(np.mean(df["icemix"])))

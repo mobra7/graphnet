@@ -418,7 +418,7 @@ class StandardFlowTask(Task):
         self._hidden_size = hidden_size
         super().__init__(**task_kwargs)
         self._flow = jammy_flows.pdf(
-            f"e{len(self._target_labels)}",
+            f"s{len(self._target_labels)}",
             flow_layers,
             conditional_input_dim=hidden_size,
         )

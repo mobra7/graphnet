@@ -24,11 +24,12 @@ from graphnet.data.constants import FEATURES, TRUTH
 from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models import Model
 from graphnet.models.detector.icecube import IceCube86
+from graphnet.models.graphs.nodes import IceMixNodes
 
 
-model_path = "./vMF_IS_09_19"
+model_path = "./icemix_10_23"
 model = Model.load(f"{model_path}/model.pth")
-df = pd.read_pickle(f"{model_path}/performance.pkl")
+df = pd.read_pickle(f"{model_path}/performance_2.pkl")
 select_id = 3
 max_llh_ze = df["max_llh_ze"][select_id]
 max_llh_az = df["max_llh_az"][select_id]
@@ -39,14 +40,35 @@ truth_az = df["truth_az"][select_id]
 event_no = [df["event_no"].to_list()[select_id]]
 
 
-db_path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
+# db_path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
+db_path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_2.db"
 pulsemap = "InIcePulses"
-features = FEATURES.ICECUBE86
+features = [
+    "dom_x",
+    "dom_y",
+    "dom_z",
+    "dom_time",
+    "charge",
+    # "rde",
+    # "pmt_area",
+    "hlc",
+]
 truth = TRUTH.ICECUBE86
 batch_size = 500
 num_workers = 30
 truth_table = "truth"
-graph_definition = KNNGraph(detector=IceCube86())
+graph_definition = KNNGraph(
+    detector=IceCube86(),
+    node_definition=IceMixNodes(
+        input_feature_names=features,
+        max_pulses=1024,
+        z_name="dom_z",
+        hlc_name="hlc",
+        add_ice_properties=False,
+    ),
+    input_feature_names=features,
+    columns=[0, 1, 2, 3],
+)
 
 
 dataloader = make_dataloader(
@@ -154,7 +176,7 @@ def predict_likelihood(
 
 
 skymap, azimuth, zenith = predict_likelihood(
-    model, truth_ze, truth_az, np.deg2rad(7.5), dataloader
+    model, truth_ze, truth_az, np.deg2rad(15), dataloader
 )
 log_skymap = np.where(skymap > 0.000001, skymap, 0.000001)
 log_skymap = np.log(log_skymap[0].reshape(azimuth.shape))
@@ -190,6 +212,7 @@ spline_ze, spline_az = rotate_ze_az(spline_ze, spline_az, truth_ze, truth_az)
 max_llh_ze, max_llh_az = rotate_ze_az(
     max_llh_ze, max_llh_az, truth_ze, truth_az
 )
+
 
 # Plot truth position, spline mpe, and max likelihood
 ax.plot(0, 0, "rx", markersize=10, label="Truth")
