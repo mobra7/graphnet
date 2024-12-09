@@ -116,7 +116,7 @@ class NormalizingFlow(EasySyntax):
         self._condition_on = condition_on
         self._fc1 = nn.Linear(hidden_size, 64)
         self._fc2 = nn.Linear(64, 32)
-        self._norm = torch.nn.BatchNorm1d(hidden_size, eps = 1e-4)
+        self._norm = torch.nn.BatchNorm1d(hidden_size, eps=1e-4)
 
     def forward(self, data: Union[Data, List[Data]]) -> Tensor:
         """Forward pass, chaining model components."""

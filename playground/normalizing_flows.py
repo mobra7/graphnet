@@ -280,7 +280,7 @@ def main(
     model = NormalizingFlow(
         graph_definition=graph_definition,
         flow_layers=config["flow_layers"],
-        target_norm=1.,
+        target_norm=1.0,
         backbone=backbone,
         optimizer_class=Adam,
         target_labels=config["target"],
@@ -317,7 +317,7 @@ def main(
                 filename=f"best" + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
             ),
         ],
-        #ckpt_path=f"{save_path}/checkpoints/best-epoch=40-val_loss=-2.86-train_loss=-2.70.ckpt",
+        # ckpt_path=f"{save_path}/checkpoints/best-epoch=40-val_loss=-2.86-train_loss=-2.70.ckpt",
         **config["fit"],
     )
     # Get predictions

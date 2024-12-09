@@ -185,13 +185,13 @@ class GridDatasetAroundPoint(SQLiteDataset):
 
         # Apply grid
         _, azimuth, zenith = self._major_list[sequential_index]
-        graph["x_direction"] = torch.cos(torch.tensor(azimuth)) * torch.sin(
-            torch.tensor(zenith)
-        ).reshape(-1)
-        graph["y_direction"] = torch.sin(torch.tensor(azimuth)) * torch.sin(
-            torch.tensor(zenith)
-        ).reshape(-1)
-        graph["z_direction"] = torch.cos(torch.tensor(zenith)).reshape(-1)
+        # graph["x_direction"] = torch.cos(torch.tensor(azimuth)) * torch.sin(
+        #     torch.tensor(zenith)
+        # ).reshape(-1)
+        # graph["y_direction"] = torch.sin(torch.tensor(azimuth)) * torch.sin(
+        #     torch.tensor(zenith)
+        # ).reshape(-1)
+        # graph["z_direction"] = torch.cos(torch.tensor(zenith)).reshape(-1)
         graph["max_llh_ze"] = torch.tensor(zenith).reshape(-1)
         graph["max_llh_az"] = torch.tensor(azimuth).reshape(-1)
 
@@ -213,11 +213,15 @@ class GridDatasetBestPoint(SQLiteDataset):
         self._zenith_centers = []
 
         for event_no in selection:
-            min_index = results[results["event_no"] == float(event_no)][
-                "nllh"
-            ].idxmin()
-            self._azimuth_centers.append(results.loc[min_index, "azimuth"])
-            self._zenith_centers.append(results.loc[min_index, "zenith"])
+            if float(event_no) in results["event_no"].values:
+                min_index = results[results["event_no"] == float(event_no)][
+                    "nllh"
+                ].idxmin()
+                self._azimuth_centers.append(results.loc[min_index, "azimuth"])
+                self._zenith_centers.append(results.loc[min_index, "zenith"])
+            else:
+                self._azimuth_centers.append(0)
+                self._zenith_centers.append(0)
 
         self._ticks = ticks
         self._azimuth_delta = azimuth_delta
@@ -264,13 +268,13 @@ class GridDatasetBestPoint(SQLiteDataset):
 
         # Apply grid
         _, azimuth, zenith = self._major_list[sequential_index]
-        graph["x_direction"] = torch.cos(torch.tensor(azimuth)) * torch.sin(
-            torch.tensor(zenith)
-        ).reshape(-1)
-        graph["y_direction"] = torch.sin(torch.tensor(azimuth)) * torch.sin(
-            torch.tensor(zenith)
-        ).reshape(-1)
-        graph["z_direction"] = torch.cos(torch.tensor(zenith)).reshape(-1)
+        # graph["x_direction"] = torch.cos(torch.tensor(azimuth)) * torch.sin(
+        #     torch.tensor(zenith)
+        # ).reshape(-1)
+        # graph["y_direction"] = torch.sin(torch.tensor(azimuth)) * torch.sin(
+        #     torch.tensor(zenith)
+        # ).reshape(-1)
+        # graph["z_direction"] = torch.cos(torch.tensor(zenith)).reshape(-1)
 
         graph["max_llh_ze"] = torch.tensor(zenith).reshape(-1)
         graph["max_llh_az"] = torch.tensor(azimuth).reshape(-1)
@@ -283,8 +287,9 @@ if __name__ == "__main__":
     # data_path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
     data_path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
     model_path = "./NF_11_13"
-    gpus = [0]
-    batch_size = 500
+    gpus = [3]
+    batch_size = 250
+    num_workers = 30
 
     features = FEATURES.ICECUBE86
     truth = TRUTH.ICECUBE86
@@ -297,7 +302,7 @@ if __name__ == "__main__":
     train_val_selection, test_selection = train_test_split(
         events["event_no"].tolist(), random_state=42, test_size=0.10
     )
-    test_selection = test_selection[:100]
+    test_selection = test_selection[:10]
 
 
     dm = GraphNeTDataModule(
@@ -323,7 +328,7 @@ if __name__ == "__main__":
         test_selection=test_selection,
         test_dataloader_kwargs={
             "batch_size": batch_size,
-            "num_workers": 20,
+            "num_workers": num_workers,
             "shuffle": False,
         },
     )
@@ -338,11 +343,11 @@ if __name__ == "__main__":
         "azimuth",
         "zenith",
         "energy",
-        "x_direction",
-        "y_direction",
-        "z_direction",
-        "max_llh_ze",
+        # "x_direction",
+        # "y_direction",
+        # "z_direction",
         "max_llh_az",
+        "max_llh_ze",
     ]
     assert isinstance(additional_attributes, list)  # mypy
 
@@ -352,6 +357,7 @@ if __name__ == "__main__":
         gpus=gpus,
         precision="64-true",
     )
+    print(results.head(10))
 
     dm = GraphNeTDataModule(
         dataset_reference=GridDatasetBestPoint,
@@ -375,7 +381,7 @@ if __name__ == "__main__":
         test_selection=test_selection,
         test_dataloader_kwargs={
             "batch_size": batch_size,
-            "num_workers": 20,
+            "num_workers": num_workers,
             "shuffle": False,
         },
     )
@@ -394,4 +400,4 @@ if __name__ == "__main__":
     # Save results as .csv
     results.to_csv(f"{model_path}/results.csv", index=False)
     results.to_pickle(f"{model_path}/results.pkl")
-    print(results.head())
+    print(results.head(10))
