@@ -304,7 +304,6 @@ if __name__ == "__main__":
     )
     test_selection = test_selection[:10]
 
-
     dm = GraphNeTDataModule(
         dataset_reference=GridDatasetAroundPoint,
         dataset_args={
