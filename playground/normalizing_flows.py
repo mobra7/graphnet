@@ -202,11 +202,13 @@ def main(
         "num_workers": num_workers,
         "target": target,
         "early_stopping_patience": early_stopping_patience,
+        "flow_layers": "gggt",
         "fit": {
             "gpus": gpus,
             "max_epochs": max_epochs,
             "distribution_strategy": "auto",
             "precision": "64-true",
+            # "gradient_clip_val": 1,
         },
     }
 
@@ -272,12 +274,12 @@ def main(
     backbone = model.backbone.double()
     for i, param in enumerate(backbone.parameters()):
         param.requires_grad = False
-        if i == len(list(backbone.parameters())) - 3:
-            break
+        # if i == len(list(backbone.parameters())) - 3:
+        #     break
 
     model = NormalizingFlow(
         graph_definition=graph_definition,
-        flow_layers="vvvvvv",
+        flow_layers=config["flow_layers"],
         target_norm=1.,
         backbone=backbone,
         optimizer_class=Adam,
@@ -315,6 +317,7 @@ def main(
                 filename=f"best" + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
             ),
         ],
+        #ckpt_path=f"{save_path}/checkpoints/best-epoch=40-val_loss=-2.86-train_loss=-2.70.ckpt",
         **config["fit"],
     )
     # Get predictions
@@ -348,9 +351,9 @@ if __name__ == "__main__":
     # settings
     path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_1.db"
     # path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = "/ptmp/mpp/mbranden/graphnet/playground/NF_11_18"
+    save_path = "/ptmp/mpp/mbranden/graphnet/playground/NF_12_05"
     pulsemap = "InIcePulses"
-    target = ["azimuth", "zenith"]
+    target = ["x_direction", "y_direction", "z_direction"]
     truth_table = "truth"
     gpus = [2]
     max_epochs = 200

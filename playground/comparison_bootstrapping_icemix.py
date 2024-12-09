@@ -21,8 +21,8 @@ print(freedom.head())
 # selection = list(pd.read_pickle(f'{model_path}/performance_events.pkl')['event_no'])
 selection = list(freedom["event_no"])
 
-# path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_2.db"
-path = "/scratch/users/allorana/northern_sqlite/old_files/dev_northern_tracks_muon_labels_v3_part_2.db"
+path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_muon_labels_v3_part_2.db"
+# path = "/scratch/users/allorana/northern_sqlite/old_files/dev_northern_tracks_muon_labels_v3_part_2.db"
 pulsemap = "InIcePulses"
 target = "scrambled_class"
 truth_table = "truth"
@@ -32,7 +32,16 @@ early_stopping_patience = 5
 batch_size = 20
 num_workers = 30
 wandb = False
-features = FEATURES.ICECUBE86
+features = [
+    "dom_x",
+    "dom_y",
+    "dom_z",
+    "dom_time",
+    "charge",
+    # "rde",
+    # "pmt_area",
+    "hlc",
+]
 truth = TRUTH.ICECUBE86
 graph_definition = KNNGraph(
     detector=IceCube86(),
@@ -250,9 +259,9 @@ def plot_percentiles_comparison_with_bootstrap(df, columns, title, filename):
 # Call the function with both columns
 plot_percentiles_comparison_with_bootstrap(
     df,
-    ["icemix", "SBI", "spline"],
-    f"icemix, icemix SBI and spline with 95%-Bands",
-    f"{model_path}/comparison_with_uncertainties.pdf",
+    ["icemix", "SBI"],
+    f"icemix, icemix SBI with 95%-Bands",
+    f"{model_path}/comparison_no_spline.pdf",
 )
 
 print("Model mean opening angle: ", np.degrees(np.mean(df["SBI"])))

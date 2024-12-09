@@ -5,6 +5,7 @@ import torch
 from torch import Tensor
 from torch_geometric.data import Data
 from torch.optim import Adam
+import torch.nn as nn
 
 from graphnet.models.gnn.gnn import GNN
 from .easy_model import EasySyntax
@@ -93,7 +94,7 @@ class NormalizingFlow(EasySyntax):
 
         # Build Flow Task
         task = StandardFlowTask(
-            hidden_size=hidden_size,
+            hidden_size=128,
             flow_layers=flow_layers,
             target_labels=target_labels,
             target_norm=target_norm,
@@ -113,7 +114,9 @@ class NormalizingFlow(EasySyntax):
         self._graph_definition = graph_definition
         self.backbone = backbone
         self._condition_on = condition_on
-        self._norm = torch.nn.BatchNorm1d(hidden_size)
+        self._fc1 = nn.Linear(hidden_size, 64)
+        self._fc2 = nn.Linear(64, 32)
+        self._norm = torch.nn.BatchNorm1d(hidden_size, eps = 1e-4)
 
     def forward(self, data: Union[Data, List[Data]]) -> Tensor:
         """Forward pass, chaining model components."""
@@ -123,11 +126,20 @@ class NormalizingFlow(EasySyntax):
         for d in data:
             if self.backbone is not None:
                 x = self._backbone(d)
+                # x = self._fc1(x)
+                # x = nn.functional.leaky_relu(x)
+                # x = self._fc2(x)
+
+                if torch.any(torch.isnan(x)):
+                    print(x)
+                    raise ValueError(
+                        "NaN values found in tensor x before normalization."
+                    )
                 x = self._norm(x)
                 if torch.any(torch.isnan(x)):
-                    print(self._backbone(d))
+                    print(x)
                     raise ValueError(
-                        "NaN values found in tensor x after normalization."
+                        "NaN values found in tensor x after scaling."
                     )
             elif self._condition_on is not None:
                 assert isinstance(self._condition_on, list)

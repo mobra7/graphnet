@@ -417,10 +417,18 @@ class StandardFlowTask(Task):
         self._default_prediction_labels = ["nllh"]
         self._hidden_size = hidden_size
         super().__init__(**task_kwargs)
+        opt_dict=dict()
+        opt_dict["t"]=dict()
+        opt_dict["t"]["cov_type"]="full"
+        opt_dict["g"]=dict()
+        opt_dict["g"]["fit_normalization"]=0
+        opt_dict["g"]["upper_bound_for_widths"]=1.0
+        opt_dict["g"]["lower_bound_for_widths"]=0.01
         self._flow = jammy_flows.pdf(
-            f"s{len(self._target_labels)}",
+            f"e{len(self._target_labels)}",
             flow_layers,
             conditional_input_dim=hidden_size,
+            options_overwrite = opt_dict,
         )
         self._initialized = False
         self._norm = target_norm
@@ -466,5 +474,6 @@ class StandardFlowTask(Task):
             self._flow.to(self.device)
             self._initialized = True  # This is only done once
         # Compute nllh
+        labels = labels.to(self.device)
         x = self._forward(x, labels)
         return self._transform_prediction(x)
