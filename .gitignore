@@ -130,8 +130,9 @@ dmypy.json
 
 # Documentation
 docs/build/html
-docs/**/*.rst
+docs/source/api/*.rst
 docs/source/*.md
+
 
 # Badges
 assets/badges
@@ -154,6 +155,10 @@ data/examples/output/
 # Exception to geometry tables 
 !/data/geometry_tables/**/**.parquet
 !/data/tests/sqlite/upgrade_genie_step4_140028_000998_first_5_frames/upgrade_genie_step4_140028_000998_first_5_frames.db
+!/data/tests/parquet/oscNext_genie_level7_v02/merged/**
+!data/tests/parquet/oscNext_genie_level7_v02/oscNext_genie_level7_v02_first_5_frames.parquet
 !/data/examples/sqlite/prometheus/prometheus-events.db
+!/data/examples/parquet/prometheus/merged/**
+!/data/tests/prometheus/22980001_photons.parquet
 # Notebooks
 #**.ipynb

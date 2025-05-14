@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import torch
 from torch.optim.adam import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -18,10 +19,11 @@ from graphnet.models.detector.icecube import IceCube86
 from graphnet.models.gnn import DynEdge
 from graphnet.models.graphs import KNNGraph
 from graphnet.models.task.reconstruction import DirectionReconstructionWithKappa
-from graphnet.training.callbacks import PiecewiseLinearLR
+from graphnet.training.callbacks import ProgressBar
 from graphnet.training.loss_functions import VonMisesFisher3DLoss
 from graphnet.training.utils import make_train_validation_dataloader
-from graphnet.utilities.argparse import ArgumentParser
+
+
 from graphnet.utilities.logging import Logger
 from graphnet.training.labels import Direction
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
@@ -29,7 +31,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
 # Constants
 features = FEATURES.ICECUBE86
 truth = TRUTH.ICECUBE86
-
+torch.set_float32_matmul_precision('medium')
 
 
 def main(
@@ -43,6 +45,7 @@ def main(
     batch_size: int,
     num_workers: int,
     wandb: bool = False,
+    save_path: str = '/ptmp/mpp/mbranden/graphnet/playground/dynedge_baseline'
 ) -> None:
     """Run example."""
     # Construct Logger
@@ -77,8 +80,6 @@ def main(
         },
     }
 
-    archive = os.path.join(EXAMPLE_OUTPUT_DIR, "train_model_without_configs")
-    run_name = "dynedge_{}_example".format(config["target"])
     if wandb:
         # Log configuration to W&B
         wandb_logger.experiment.config.update(config)
@@ -135,7 +136,7 @@ def main(
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-03, "eps": 1e-03},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 4},
+        scheduler_kwargs={'patience': 3},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
@@ -146,7 +147,28 @@ def main(
         validation_dataloader,
         early_stopping_patience=config["early_stopping_patience"],
         logger=wandb_logger if wandb else None,
-        **config["fit"],
+        callbacks= [ProgressBar(),
+                    EarlyStopping(
+                    monitor="val_loss",
+                    patience=early_stopping_patience,
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=-1,
+                        every_n_epochs = 5,
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"{model.backbone.__class__.__name__}"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}"
+                    ),
+                    ModelCheckpoint(
+                        save_top_k=1,
+                        monitor="val_loss",
+                        mode="min",
+                        dirpath=f"{save_path}/checkpoints/",
+                        filename=f"best"
+                        + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
+                    )],
+        ckpt_path = './lightning_logs/version_3/checkpoints/DynEdge-epoch=67-val_loss=-2.62-train_loss=-2.63.ckpt',
+        **config["fit"]
     )
 
     # Get predictions
@@ -156,17 +178,15 @@ def main(
     print(model.prediction_labels)
 
     # Save predictions and model to file
-    db_name = path.split("/")[-1].split(".")[0]
-    path = os.path.join(archive, db_name, run_name)
-    logger.info(f"Writing results to {path}")
-    os.makedirs(path, exist_ok=True)
 
-    model.save(f"{path}/model.pth")
+    os.makedirs(save_path, exist_ok=True)
+
+    model.save(f"{save_path}/model.pth")
 
     # Save model config and state dict - Version safe save method.
     # This method of saving models is the safest way.
-    model.save_state_dict(f"{path}/state_dict.pth")
-    model.save_config(f"{path}/model_config.yml")
+    model.save_state_dict(f"{save_path}/state_dict.pth")
+    model.save_config(f"{save_path}/model_config.yml")
 
     results = model.predict_as_dataframe(
         validation_dataloader,
@@ -175,7 +195,7 @@ def main(
     )
 
     # Save results as .csv
-    results.to_csv(f"{path}/results.csv")
+    results.to_csv(f"{save_path}/results.csv")
 
 
 
@@ -183,14 +203,14 @@ def main(
 if __name__ == "__main__":
 
     # settings
-    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
+    path = "/scratch/users/mbranden/sim_files/dev_northern_tracks_full_part_1.db"
     pulsemap = 'InIcePulses'
     target = 'direction'
     truth_table = 'truth'
-    gpus = [0]
+    gpus = [0,1]
     max_epochs = 150
-    early_stopping_patience = 10
-    batch_size = 500
+    early_stopping_patience = 7
+    batch_size = 250
     num_workers = 30
     wandb =  False
 

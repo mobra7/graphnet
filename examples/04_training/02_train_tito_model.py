@@ -18,10 +18,15 @@ from graphnet.models.task.reconstruction import (
 )
 from graphnet.training.labels import Direction
 from graphnet.training.loss_functions import VonMisesFisher3DLoss
-from graphnet.training.utils import make_train_validation_dataloader
 from graphnet.utilities.argparse import ArgumentParser
 from graphnet.utilities.logging import Logger
+<<<<<<< HEAD
 os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
+=======
+from graphnet.data import GraphNeTDataModule
+from graphnet.data.dataset import SQLiteDataset
+from graphnet.data.dataset import ParquetDataset
+>>>>>>> 6309445535f1d940a4df4a6d326bf5805caaf03a
 
 # Constants
 features = FEATURES.PROMETHEUS
@@ -71,6 +76,9 @@ def main(
             "gpus": gpus,
             "max_epochs": max_epochs,
         },
+        "dataset_reference": SQLiteDataset
+        if path.endswith(".db")
+        else ParquetDataset,
     }
 
     graph_definition = KNNGraph(detector=Prometheus())
@@ -80,26 +88,36 @@ def main(
         # Log configuration to W&B
         wandb_logger.experiment.config.update(config)
 
-    (
-        training_dataloader,
-        validation_dataloader,
-    ) = make_train_validation_dataloader(
-        db=config["path"],
-        graph_definition=graph_definition,
-        selection=None,
-        pulsemaps=config["pulsemap"],
-        features=features,
-        truth=truth,
-        batch_size=config["batch_size"],
-        num_workers=config["num_workers"],
-        truth_table=truth_table,
-        index_column="event_no",
-        labels={
-            "direction": Direction(
-                azimuth_key="injection_azimuth", zenith_key="injection_zenith"
-            )
+    # Use GraphNetDataModule to load in data
+    dm = GraphNeTDataModule(
+        dataset_reference=config["dataset_reference"],
+        dataset_args={
+            "truth": truth,
+            "truth_table": truth_table,
+            "features": features,
+            "graph_definition": graph_definition,
+            "pulsemaps": [config["pulsemap"]],
+            "path": config["path"],
+            "index_column": "event_no",
+            "labels": {
+                "direction": Direction(
+                    azimuth_key="injection_azimuth",
+                    zenith_key="injection_zenith",
+                )
+            },
+        },
+        train_dataloader_kwargs={
+            "batch_size": config["batch_size"],
+            "num_workers": config["num_workers"],
+        },
+        test_dataloader_kwargs={
+            "batch_size": config["batch_size"],
+            "num_workers": config["num_workers"],
         },
     )
+
+    training_dataloader = dm.train_dataloader
+    validation_dataloader = dm.val_dataloader
 
     # Building model
     backbone = DynEdgeTITO(

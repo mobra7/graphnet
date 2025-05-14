@@ -38,12 +38,13 @@ from graphnet.models.detector.icecube import IceCube86
 from graphnet.models.gnn import DynEdge
 from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
+from graphnet.models.task.reconstruction import DirectionReconstructionWithKappa
 from graphnet.models.task import StandardLearnedTask
 from graphnet.models.task.classification import freedom_BinaryClassificationTask
 from graphnet.training.callbacks import PiecewiseLinearLR, ProgressBar
 
 from graphnet.training.labels import Label
-from graphnet.training.loss_functions import BinaryCrossEntropyLoss
+from graphnet.training.loss_functions import BinaryCrossEntropyLoss, VonMisesFisher3DLoss
 from graphnet.training.utils import collate_fn
 from graphnet.utilities.config import Configurable, DatasetConfig,DatasetConfigSaverABCMeta, ModelConfig
 from graphnet.utilities.logging import Logger
@@ -625,13 +626,13 @@ class freedom_Dataset(
         """Return dictionary of  labels, to be added as graph attributes."""
         if "pid" in truth_dict.keys():
             abs_pid = abs(truth_dict["pid"])
-            sim_type = truth_dict["sim_type"]
+            #sim_type = truth_dict["sim_type"]
 
             labels_dict = {
                 self._index_column: truth_dict[self._index_column],
                 "muon": int(abs_pid == 13),
                 "muon_stopped": int(truth_dict.get("stopped_muon") == 1),
-                "noise": int((abs_pid == 1) & (sim_type != "data")),
+               # "noise": int((abs_pid == 1) & (sim_type != "data")),
                 "neutrino": int(
                     (abs_pid != 13) & (abs_pid != 1)
                 ),  # @TODO: `abs_pid in [12,14,16]`?
@@ -1682,18 +1683,34 @@ def main(
         selection= None, #either None, str, or List[(event_no,scramble_class)]
     )
     
-    # pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
+    # backbone = DynEdge(
+    #     nb_inputs=graph_definition.nb_outputs,
+    #     global_pooling_schemes=["min", "max", "mean", "sum"],
+    # )
+    # task = DirectionReconstructionWithKappa(
+    #     hidden_size=backbone.nb_outputs,
+    #     target_labels=config["target"],
+    #     loss_function=VonMisesFisher3DLoss(),
+    #     )
+    # model = StandardModel(
+    #     graph_definition=graph_definition,
+    #     backbone=backbone,
+    #     tasks=[task],
+    #     optimizer_class=Adam,
+    #     optimizer_kwargs={"lr": 1e-03, "eps": 1e-03},
+    #     scheduler_class=ReduceLROnPlateau,
+    #     scheduler_kwargs={'patience': 3},
+    #     scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
+    # )
 
-    # backbone = pretrained_dynedge.backbone
-    # for i,param in enumerate(backbone.parameters()):
-    #     param.requires_grad = False
-    #     if i == len(list(backbone.parameters())) - 3:
-    #         break
+    #pretrained_dynedge = model.load_state_dict('./dynedge_baseline/state_dict.pth')
+    pretrained_dynedge = Model.load('/ptmp/mpp/mbranden/graphnet/playground/dynedge_baseline/model.pth')
 
-    backbone = DynEdge(
-    nb_inputs=graph_definition.nb_outputs,
-    global_pooling_schemes=["min", "max", "mean", "sum"],
-    )
+    backbone = pretrained_dynedge.backbone
+    for i,param in enumerate(backbone.parameters()):
+        param.requires_grad = False
+        if i == len(list(backbone.parameters())) - 3:
+            break
 
 
     task = freedom_BinaryClassificationTask(
@@ -1780,18 +1797,18 @@ def main(
 if __name__ == "__main__":
 
     # settings
-    path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/vMF_IS_10_04'
+    path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_1.db"
+    save_path = '/ptmp/mpp/mbranden/graphnet/playground/vMF_IS_10_15'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
-    gpus = [1]
+    gpus = [0,1]
     max_epochs = 250
     early_stopping_patience = 12
     batch_size = 500
     num_workers = 30
-    wandb =  True
+    wandb =  False
     kappa = 0.5
 
     main(

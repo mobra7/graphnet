@@ -1,9 +1,19 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="3,2,1,0"
-from typing import (Any, Callable, Dict, List, Optional, Tuple, Type,
-                    Union, cast)
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "3,2,1,0"
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    cast,
+)
 from tqdm import tqdm
 
 import healpy as hp
@@ -23,26 +33,39 @@ from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
 from sklearn.model_selection import train_test_split
 
-from graphnet.constants import EXAMPLE_DATA_DIR, EXAMPLE_OUTPUT_DIR, GRAPHNET_ROOT_DIR
+from graphnet.constants import (
+    EXAMPLE_DATA_DIR,
+    EXAMPLE_OUTPUT_DIR,
+    GRAPHNET_ROOT_DIR,
+)
 from graphnet.data.constants import FEATURES, TRUTH
 from graphnet.data.dataset import Dataset, ParquetDataset, SQLiteDataset
-from graphnet.data.dataset.dataset import ColumnMissingException, EnsembleDataset, parse_graph_definition
+from graphnet.data.dataset.dataset import (
+    ColumnMissingException,
+    EnsembleDataset,
+    parse_graph_definition,
+)
 from graphnet.data.utilities.string_selection_resolver import (
-    StringSelectionResolver
-    )
+    StringSelectionResolver,
+)
 from graphnet.models import Model, StandardModel
 from graphnet.models.detector.icecube import IceCube86
 from graphnet.models.gnn import DynEdge
 from graphnet.models.gnn.gnn import GNN
 from graphnet.models.graphs import GraphDefinition, KNNGraph
 from graphnet.models.task import StandardLearnedTask
-from graphnet.models.task.classification import freedom_BinaryClassificationTask
+from graphnet.models.task.classification import (
+    freedom_BinaryClassificationTask,
+)
 from graphnet.training.callbacks import PiecewiseLinearLR
 from graphnet.training.labels import Label
 from graphnet.training.loss_functions import BinaryCrossEntropyLoss
 from graphnet.training.utils import collate_fn
-from graphnet.utilities.config import (Configurable, DatasetConfig,
-                                       DatasetConfigSaverABCMeta)
+from graphnet.utilities.config import (
+    Configurable,
+    DatasetConfig,
+    DatasetConfigSaverABCMeta,
+)
 from graphnet.utilities.logging import Logger
 from freedom import LikelihoodFreeModel, disc_NeuralNetwork
 
@@ -304,14 +327,14 @@ class freedom_Dataset(
         if selection is None:
             self._indices = self._get_all_indices()
         elif isinstance(selection, str):
-            indices = self._resolve_string_selection_to_indices(
-                selection
-            )
-            self._indices = [(num, 0) for num in indices] + [(num, 1) for num in indices]
+            indices = self._resolve_string_selection_to_indices(selection)
+            self._indices = [(num, 0) for num in indices] + [
+                (num, 1) for num in indices
+            ]
         else:
             self._indices = selection
 
-        assert isinstance(self._indices[0],tuple)
+        assert isinstance(self._indices[0], tuple)
 
         # Purely internal member variables
         self._missing_variables: Dict[str, List[str]] = {}
@@ -520,10 +543,9 @@ class freedom_Dataset(
         )
         truth: Tuple[Any, ...] = truth_query[0][0]
         scramble_class = truth_query[1]
-        
+
         # add scramble_class to truth
         truth = truth + (scramble_class,)
-        
 
         if self._node_truth:
             assert self._node_truth_table is not None
@@ -575,7 +597,7 @@ class freedom_Dataset(
             key: truth[index] for index, key in enumerate(self._truth)
         }
         # include scrambled_class in truth_dict
-        truth_dict['scrambled_class'] = truth[-1]
+        truth_dict["scrambled_class"] = truth[-1]
 
         # Define custom labels
         labels_dict = self._get_labels(truth_dict)
@@ -665,6 +687,7 @@ class freedom_Dataset(
         except KeyError:
             return -1
 
+
 class freedom_SQLiteDataset(freedom_Dataset):
     """Pytorch dataset for reading data from SQLite databases."""
 
@@ -739,9 +762,11 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 raise e
         return result, scramble_class
 
-    def _get_all_indices(self, return_type: str = 'unscrambled') -> List[tuple]:
+    def _get_all_indices(
+        self, return_type: str = "unscrambled"
+    ) -> List[tuple]:
 
-        print('getting all indices')
+        print("getting all indices")
         self._establish_connection(0)
         indices = pd.read_sql_query(
             f"SELECT {self._index_column} FROM {self._truth_table}", self._conn
@@ -755,15 +780,21 @@ class freedom_SQLiteDataset(freedom_Dataset):
 
         min_count = 1
         max_count = 1000
-        indices = [event_no for event_no, in conn.execute(query, (min_count, max_count)).fetchall()]
-        
-        
-        if return_type == 'scrambled':
+        indices = [
+            event_no
+            for event_no, in conn.execute(
+                query, (min_count, max_count)
+            ).fetchall()
+        ]
+
+        if return_type == "scrambled":
             return [(num, 0) for num in indices]
-        elif return_type == 'unscrambled':
+        elif return_type == "unscrambled":
             return [(num, 1) for num in indices]
         else:  # return_type == 'both'
-            return [(num, 0) for num in indices] + [(num, 1) for num in indices]
+            return [(num, 0) for num in indices] + [
+                (num, 1) for num in indices
+            ]
 
     def _get_event_index(
         self, sequential_index: Optional[int]
@@ -778,7 +809,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 assert isinstance(index_, tuple)
                 index = index_[0]
         return index
-    
+
     def _get_event_scramble_class(
         self, sequential_index: Optional[int]
     ) -> Union[int, list]:
@@ -795,10 +826,10 @@ class freedom_SQLiteDataset(freedom_Dataset):
             scramble_class_ = self._indices
             if self._database_list is None:
                 assert isinstance(scramble_class_, list)
-                scramble_class = np.array(scramble_class_)[:,1].tolist()
+                scramble_class = np.array(scramble_class_)[:, 1].tolist()
             else:
                 assert isinstance(scramble_class_, list)
-                scramble_class = np.array(scramble_class_[0])[:,1].tolist()
+                scramble_class = np.array(scramble_class_[0])[:, 1].tolist()
         return scramble_class
 
     # Custom, internal method(s)
@@ -848,6 +879,7 @@ class freedom_SQLiteDataset(freedom_Dataset):
                 self._conn = None
         return self
 
+
 def make_freedom_dataloader(
     db: str,
     pulsemaps: Union[str, List[str]],
@@ -869,13 +901,12 @@ def make_freedom_dataloader(
     index_column: str = "event_no",
     labels: Optional[Dict[str, Callable]] = None,
     no_of_events: Optional[int] = None,
-    seed = 1,
+    seed=1,
 ) -> DataLoader:
     """Construct `DataLoader` instance."""
     # Check(s)
     if isinstance(pulsemaps, str):
         pulsemaps = [pulsemaps]
-
 
     dataset = freedom_SQLiteDataset(
         path=db,
@@ -896,7 +927,7 @@ def make_freedom_dataloader(
         selection = dataset._get_all_indices()
         random.seed(seed)
         selection = random.sample(selection, no_of_events)
-        
+
         dataset = freedom_SQLiteDataset(
             path=db,
             pulsemaps=pulsemaps,
@@ -912,8 +943,7 @@ def make_freedom_dataloader(
             index_column=index_column,
             graph_definition=graph_definition,
         )
-        
-    
+
     # adds custom labels to dataset
     if isinstance(labels, dict):
         for label in labels.keys():
@@ -931,13 +961,15 @@ def make_freedom_dataloader(
 
     return dataloader
 
+
 class ScrambledDirection(Label):
-    """Class for producing particle direction/pointing label and randomly it based on scramble_flag."""
+    """Class for producing particle direction/pointing label and randomly it
+    based on scramble_flag."""
 
     def __init__(
         self,
         key: str = "scrambled_direction",
-        scramble_flag: str = 'scrambled_class',
+        scramble_flag: str = "scrambled_class",
         azimuth_key: str = "azimuth",
         zenith_key: str = "zenith",
     ):
@@ -955,14 +987,14 @@ class ScrambledDirection(Label):
                 be used to access the zenith angle, used when calculating the
                 direction.
         """
-        print('creating scrambled direction label')
+        print("creating scrambled direction label")
         self._scramble_flag = scramble_flag
         self._azimuth_key = azimuth_key
         self._zenith_key = zenith_key
 
         # intialize random direction for first call with raised flag
-        zenith = torch.rand((1,))*torch.pi
-        azimuth = torch.rand((1,))*2*torch.pi
+        zenith = torch.rand((1,)) * torch.pi
+        azimuth = torch.rand((1,)) * 2 * torch.pi
         x = torch.cos(azimuth) * torch.sin(zenith).reshape(-1, 1)
         y = torch.sin(azimuth) * torch.sin(zenith).reshape(-1, 1)
         z = torch.cos(zenith).reshape(-1, 1)
@@ -975,7 +1007,7 @@ class ScrambledDirection(Label):
         """Compute label for `graph`."""
 
         # check that the flag is there
-        assert  self._scramble_flag in graph.keys()
+        assert self._scramble_flag in graph.keys()
         assert graph[self._scramble_flag] is not None
 
         x = torch.cos(graph[self._azimuth_key]) * torch.sin(
@@ -994,36 +1026,39 @@ class ScrambledDirection(Label):
         return val
 
 
-path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
-pulsemap = 'InIcePulses'
-target = 'scrambled_class'
-truth_table = 'truth'
+# path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_2.db"
+path = "/scratch/users/mbranden/sim_files/no_hlc_dev_northern_tracks_full_part_2.db"
+pulsemap = "InIcePulses"
+target = "scrambled_class"
+truth_table = "truth"
 gpus = [0]
 max_epochs = 30
 early_stopping_patience = 5
 batch_size = 50
 num_workers = 30
-wandb =  False
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
-print('GPU: ',torch.cuda.is_available())
+wandb = False
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print("GPU: ", torch.cuda.is_available())
 print(torch.cuda.current_device())
 features = FEATURES.ICECUBE86
 truth = TRUTH.ICECUBE86
 
 graph_definition = KNNGraph(detector=IceCube86())
 
-labels = {'scrambled_direction': ScrambledDirection(
-        zenith_key='zenith',azimuth_key='azimuth'
-        )
-    }
+labels = {
+    "scrambled_direction": ScrambledDirection(
+        zenith_key="zenith", azimuth_key="azimuth"
+    )
+}
 
-model_path = './plots_08_07_finetuned'
-model = Model.load(f'{model_path}/model.pth')
-#model = Model.load('./vMF_IS_09_13/model.pth')
-#checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
-#model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
+model_path = "./vMF_IS_10_15"
+model = Model.load(f"{model_path}/model.pth")
+# model = Model.load('./vMF_IS_09_13/model.pth')
+# checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
+# model.load_state_dict(torch.load(checkpoint_path)['state_dict'])
 
-skymap_dataloader = make_freedom_dataloader(db=path,
+skymap_dataloader = make_freedom_dataloader(
+    db=path,
     graph_definition=graph_definition,
     pulsemaps=pulsemap,
     features=features,
@@ -1031,16 +1066,16 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     batch_size=batch_size,
     num_workers=num_workers,
     truth_table=truth_table,
-    labels= labels,
-    selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 100000,
-    shuffle = False,
-    seed = 6
+    labels=labels,
+    selection=None,  # either None, str, or List[(event_no,scramble_class)]
+    no_of_events=10,
+    shuffle=False,
+    seed=6,
 )
 
-
-
-def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, Data]]:
+def coverage(
+    model, data: Union[Data, List[Data]]
+) -> List[Union[torch.Tensor, Data]]:
     """Forward pass, chaining model components."""
     model.inference()
     model.train(mode=False)
@@ -1072,28 +1107,31 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
     max_ze = []
     max_az = []
     truth_pred_list = []
-    
 
     for d in tqdm(data):
         x_list = []
         fine_ze_all = np.empty(shape=0)
         fine_az_all = np.empty(shape=0)
         bb = model.backbone(d.to(device)).to(device)
-        truth_azimuth_list.extend(d['azimuth'].cpu().numpy())
-        truth_zenith_list.extend(d['zenith'].cpu().numpy())
-        truth_energy_list.extend(d['energy'].cpu().numpy())
-        event_nos_list.extend(d['event_no'].cpu().numpy())
+        truth_azimuth_list.extend(d["azimuth"].cpu().numpy())
+        truth_zenith_list.extend(d["zenith"].cpu().numpy())
+        truth_energy_list.extend(d["energy"].cpu().numpy())
+        event_nos_list.extend(d["event_no"].cpu().numpy())
 
         # truth lh
-        truth_azimuth = torch.tensor(d['azimuth'].cpu().numpy())
-        truth_zenith = torch.tensor(d['azimuth'].cpu().numpy())
+        truth_azimuth = torch.tensor(d["azimuth"].cpu().numpy())
+        truth_zenith = torch.tensor(d["zenith"].cpu().numpy())
         truth_x = torch.cos(truth_azimuth) * torch.sin(truth_zenith)
         truth_y = torch.sin(truth_azimuth) * torch.sin(truth_zenith)
         truth_z = torch.cos(truth_zenith)
-        truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(device)
-        x = torch.cat([bb,truth_directions],dim=1).float().to(device)
+        truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(
+            device
+        )
+        x = torch.cat([bb, truth_directions], dim=1).float().to(device)
         x = model._discriminator(x)
-        truth_pred_list.extend([task(x).detach().cpu().numpy() for task in model._tasks])
+        truth_pred_list.extend(
+            [task(x).detach().cpu().numpy() for task in model._tasks]
+        )
 
         for z in range(bb.shape[0]):
             x_list.extend(npix * [bb[z]])
@@ -1104,7 +1142,9 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
         y = torch.stack(y_list).reshape(len(x_list), 3)
 
         # Add scrambled target to inputs
-        x = torch.cat([x, y], dim=1).float().to(device)  # Shape: (num_events * npix, feature_dim + 3)
+        x = (
+            torch.cat([x, y], dim=1).float().to(device)
+        )  # Shape: (num_events * npix, feature_dim + 3)
         dims = x.shape
         y = []
 
@@ -1113,22 +1153,30 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
 
         # Pass to task
         task_preds = [task(x) for task in model._tasks]
-        pred_chunk = task_preds[0].chunk(events_count)  # Only takes first task for now
-        preds = np.array([event_pred.detach().cpu().numpy() for event_pred in pred_chunk])
-        
-        fine_x_all = torch.empty((0,dims[1])).to(device)
+        pred_chunk = task_preds[0].chunk(
+            events_count
+        )  # Only takes first task for now
+        preds = np.array(
+            [event_pred.detach().cpu().numpy() for event_pred in pred_chunk]
+        )
+
+        fine_x_all = torch.empty((0, dims[1])).to(device)
         for i in range(len(preds)):
 
             # Find the best prediction direction
             best_pred_idx = np.argmax(preds[i])
             best_zenith = zenith[best_pred_idx]
             best_azimuth = azimuth[best_pred_idx]
-            
+
             # Create a finer grid around the best prediction direction
-            fine_zenith = np.linspace(best_zenith - 0.1, best_zenith + 0.1, 100)
-            fine_azimuth = np.linspace(best_azimuth - 0.1, best_azimuth + 0.1, 100)
+            fine_zenith = np.linspace(
+                best_zenith - 0.1, best_zenith + 0.1, 100
+            )
+            fine_azimuth = np.linspace(
+                best_azimuth - 0.1, best_azimuth + 0.1, 100
+            )
             fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
-            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
+            fine_ze_all = np.append(fine_ze_all, fine_ze.flatten())
             fine_az_all = np.append(fine_az_all, fine_az.flatten())
             fine_zenith = torch.tensor(fine_ze.flatten())
             fine_azimuth = torch.tensor(fine_az.flatten())
@@ -1136,27 +1184,37 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             fine_x = torch.cos(fine_azimuth) * torch.sin(fine_zenith)
             fine_y = torch.sin(fine_azimuth) * torch.sin(fine_zenith)
             fine_z = torch.cos(fine_zenith)
-            fine_directions = torch.stack((fine_x, fine_y, fine_z), dim=1).to(device)
+            fine_directions = torch.stack((fine_x, fine_y, fine_z), dim=1).to(
+                device
+            )
 
             fine_npix = fine_directions.shape[0]
 
             fine_x_list = fine_npix * [bb[i]]
             fine_x = torch.stack(fine_x_list)
-            fine_y = torch.stack([fine_directions]).reshape(len(fine_x_list), 3)
+            fine_y = torch.stack([fine_directions]).reshape(
+                len(fine_x_list), 3
+            )
 
             # Add scrambled target to inputs for the finer grid
-            fine_x = torch.cat([fine_x, fine_y], dim=1).float().to(device)  # Shape: (num_events * fine_npix, feature_dim + 3)
-            fine_x_all = torch.cat([fine_x_all,fine_x], dim=0).to(device)
+            fine_x = (
+                torch.cat([fine_x, fine_y], dim=1).float().to(device)
+            )  # Shape: (num_events * fine_npix, feature_dim + 3)
+            fine_x_all = torch.cat([fine_x_all, fine_x], dim=0).to(device)
 
             # do same for small grid around truth
-            actual_zenith = d['zenith'].cpu().numpy()[i]
-            actual_azimuth = d['azimuth'].cpu().numpy()[i]
-            
+            actual_zenith = d["zenith"].cpu().numpy()[i]
+            actual_azimuth = d["azimuth"].cpu().numpy()[i]
+
             # Create a finer grid around the actual truth direction
-            fine_zenith = np.linspace(actual_zenith - 0.05, actual_zenith + 0.05, 50)
-            fine_azimuth = np.linspace(actual_azimuth - 0.05, actual_azimuth + 0.05, 50)
+            fine_zenith = np.linspace(
+                actual_zenith - 0.05, actual_zenith + 0.05, 50
+            )
+            fine_azimuth = np.linspace(
+                actual_azimuth - 0.05, actual_azimuth + 0.05, 50
+            )
             fine_ze, fine_az = np.meshgrid(fine_zenith, fine_azimuth)
-            fine_ze_all = np.append(fine_ze_all,fine_ze.flatten())
+            fine_ze_all = np.append(fine_ze_all, fine_ze.flatten())
             fine_az_all = np.append(fine_az_all, fine_az.flatten())
             fine_zenith = torch.tensor(fine_ze.flatten())
             fine_azimuth = torch.tensor(fine_az.flatten())
@@ -1170,29 +1228,40 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
 
             fine_x_list = fine_npix * [bb[i]]
             fine_x = torch.stack(fine_x_list)
-            fine_y = torch.stack([fine_directions]).reshape(len(fine_x_list), 3).to(device)
+            fine_y = (
+                torch.stack([fine_directions])
+                .reshape(len(fine_x_list), 3)
+                .to(device)
+            )
 
-
-            fine_x = torch.cat([fine_x, fine_y], dim=1).float().to(device)  # Shape: (num_events * fine_npix, feature_dim + 3)
-            fine_x_all = torch.cat([fine_x_all,fine_x], dim=0).to(device)
-
+            fine_x = (
+                torch.cat([fine_x, fine_y], dim=1).float().to(device)
+            )  # Shape: (num_events * fine_npix, feature_dim + 3)
+            fine_x_all = torch.cat([fine_x_all, fine_x], dim=0).to(device)
 
         # Pass both latent vec and scrambled target to discriminator for finer grid
         fine_x = model._discriminator(fine_x_all).to(device)
 
         # Pass to task for finer grid
         fine_task_preds = [task(fine_x) for task in model._tasks]
-        fine_pred_chunk = fine_task_preds[0].chunk(events_count)  # Only takes first task for now
-        fine_preds = np.array([event_pred.detach().cpu().numpy() for event_pred in fine_pred_chunk])
-        
+        fine_pred_chunk = fine_task_preds[0].chunk(
+            events_count
+        )  # Only takes first task for now
+        fine_preds = np.array(
+            [
+                event_pred.detach().cpu().numpy()
+                for event_pred in fine_pred_chunk
+            ]
+        )
+
         # Update max_log with finer predictions
         for j in range(len(fine_preds)):
             fine_log_skymap = np.log(fine_preds[j])
             fine_max_log_skymap = np.max(fine_log_skymap)
             max_log.extend([fine_max_log_skymap])
             max_id = np.argmax(fine_log_skymap)
-            max_ze.append(fine_ze_all[j*len(fine_log_skymap)+max_id])
-            max_az.append(fine_az_all[j*len(fine_log_skymap)+max_id])
+            max_ze.append(fine_ze_all[j * len(fine_log_skymap) + max_id])
+            max_az.append(fine_az_all[j * len(fine_log_skymap) + max_id])
 
         fine_az_all = []
         fine_ze_all = []
@@ -1202,27 +1271,43 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
         x = []
         torch.cuda.empty_cache()
 
-    return max_log, truth_pred_list, truth_azimuth_list, truth_zenith_list, max_ze, max_az, truth_energy_list, event_nos_list
+    return (
+        max_log,
+        truth_pred_list,
+        truth_azimuth_list,
+        truth_zenith_list,
+        max_ze,
+        max_az,
+        truth_energy_list,
+        event_nos_list,
+    )
 
 
-max_log, truth_preds,truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos = coverage(model,skymap_dataloader)
-truth_log = []
-
-for i in range(len(truth_preds)):
-    truth_log.extend(np.log(truth_preds[i]))
+(
+    max_log,
+    truth_preds,
+    truth_azimuth,
+    truth_zenith,
+    max_ze,
+    max_az,
+    truth_energy,
+    event_nos,
+) = coverage(model, skymap_dataloader)
+truth_log = np.log(np.concatenate(truth_preds).flatten())
 
 delta_log = np.array(max_log) - np.array(truth_log)
-
-np.save(f'{model_path}/delta_log_finegrid.npy', delta_log)
+print("truth log: ", truth_log)
+print("max log: ", max_log)
+np.save(f"{model_path}/delta_log_finegrid_trash.npy", delta_log)
 
 
 sqliteConnection = sqlite3.connect(path)
 cursor = sqliteConnection.cursor()
-event_numbers_str = ','.join(map(str, event_nos))
+event_numbers_str = ",".join(map(str, event_nos))
 query = f"SELECT * FROM spline_mpe_ic WHERE event_no IN ({event_numbers_str});"
 cursor.execute(query)
 spline_data = np.array(cursor.fetchall())
-spline_dict = {row[1]: row for row in spline_data}  
+spline_dict = {row[1]: row for row in spline_data}
 
 spline_ordered = [spline_dict[event_no] for event_no in event_nos]
 spline_ordered_np = np.array(spline_ordered)
@@ -1231,18 +1316,18 @@ spline_ze = spline_ordered_np[:, 2]
 
 
 data = {
-    'max_llh_ze': max_ze,
-    'max_llh_az': max_az,
-    'spline_ze' : spline_ze,
-    'spline_az' : spline_az,
-    'truth_ze'  : truth_zenith,
-    'truth_az'  : truth_azimuth,
-    'energy'    : truth_energy,
-    'event_no'  : event_nos,
+    "max_llh_ze": max_ze,
+    "max_llh_az": max_az,
+    "spline_ze": spline_ze,
+    "spline_az": spline_az,
+    "truth_ze": truth_zenith,
+    "truth_az": truth_azimuth,
+    "energy": truth_energy,
+    "event_no": event_nos,
 }
 
 df = pd.DataFrame(data)
-df.to_pickle(f'{model_path}/performance.pkl')
+df.to_pickle(f"{model_path}/performance_trash.pkl")
 
 # performance_events = pd.DataFrame({'event_no': event_nos})
 # performance_events.to_pickle(f'{model_path}/performance_events.pkl')
