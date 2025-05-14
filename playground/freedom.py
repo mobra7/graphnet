@@ -49,6 +49,7 @@ from graphnet.utilities.config import Configurable, DatasetConfig,DatasetConfigS
 from graphnet.utilities.logging import Logger
 
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
+torch.set_float32_matmul_precision('medium')
 
 
 
@@ -1289,10 +1290,10 @@ def main(
     pretrained_dynedge = Model.load('/scratch/users/mbranden/graphnet/playground/dynedge_baseline_3/model.pth')
 
     backbone = pretrained_dynedge.backbone
-    for i,param in enumerate(backbone.parameters()):
-        param.requires_grad = False
-        if i == len(list(backbone.parameters())) - 3:
-            break
+    # for i,param in enumerate(backbone.parameters()):
+    #     param.requires_grad = False
+    #     if i == len(list(backbone.parameters())) - 3:
+    #         break
 
 
     task = freedom_BinaryClassificationTask(
@@ -1312,11 +1313,11 @@ def main(
         optimizer_class=Adam,
         optimizer_kwargs={"lr": 1e-05, "eps": 1e-3},
         scheduler_class=ReduceLROnPlateau,
-        scheduler_kwargs={'patience': 4, 'factor': 0.1},
+        scheduler_kwargs={'patience': 2, 'factor': 0.1},
         scheduler_config={'frequency': 1, 'monitor': 'val_loss'},
     )
 
-    # model.load_state_dict('./plots_08_07_2/state_dict.pth')
+    model.load_state_dict('./plots_08_07_2/state_dict.pth')
 
 
     #Training model
@@ -1345,7 +1346,7 @@ def main(
                         filename=f"best"
                         + "-{epoch}-{val_loss:.2f}-{train_loss:.2f}",
                     )],
-        # ckpt_path = '/scratch/users/mbranden/graphnet/playground/lightning_logs/version_78/checkpoints/DynEdge-epoch=145-val_loss=0.04-train_loss=0.04.ckpt',
+        ckpt_path = './plots_08_07_finetuned/checkpoints/DynEdge-epoch=19-val_loss=0.03-train_loss=0.03.ckpt',
         **config["fit"],
     )
 
@@ -1379,14 +1380,14 @@ if __name__ == "__main__":
 
     # settings
     path = "/scratch/users/allorana/northern_sqlite/files_no_hlc/dev_northern_tracks_full_part_1.db"
-    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_14'
+    save_path = '/scratch/users/mbranden/graphnet/playground/plots_08_07_finetuned'
 
     pulsemap = 'InIcePulses'
     target = 'scrambled_class'
     truth_table = 'truth'
-    gpus = [1]
-    max_epochs = 250
-    early_stopping_patience = 12
+    gpus = [3]
+    max_epochs = 150
+    early_stopping_patience = 5
     batch_size = 500
     num_workers = 30
     wandb =  True

@@ -47,6 +47,7 @@ from graphnet.utilities.logging import Logger
 from freedom import LikelihoodFreeModel, disc_NeuralNetwork
 
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
+torch.set_float32_matmul_precision('medium')
 
 class freedom_Dataset(
     Logger,
@@ -1000,7 +1001,7 @@ truth_table = 'truth'
 gpus = [0]
 max_epochs = 30
 early_stopping_patience = 5
-batch_size = 100
+batch_size = 50
 num_workers = 30
 wandb =  False
 device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
@@ -1016,7 +1017,7 @@ labels = {'scrambled_direction': ScrambledDirection(
         )
     }
 
-model_path = './vMF_IS_10_04'
+model_path = './plots_08_07_finetuned'
 model = Model.load(f'{model_path}/model.pth')
 #model = Model.load('./vMF_IS_09_13/model.pth')
 #checkpoint_path = f'{model_path}/checkpoints/best-epoch=51-val_loss=0.14-train_loss=0.14.ckpt'
@@ -1032,7 +1033,7 @@ skymap_dataloader = make_freedom_dataloader(db=path,
     truth_table=truth_table,
     labels= labels,
     selection= None, #either None, str, or List[(event_no,scramble_class)]
-    no_of_events = 1000,
+    no_of_events = 100000,
     shuffle = False,
     seed = 6
 )
@@ -1048,10 +1049,10 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
     if isinstance(data, Data):
         data = [data]
 
-    truth_azimuth = []
-    truth_zenith = []
-    truth_energy = []
-    event_nos = []
+    truth_azimuth_list = []
+    truth_zenith_list = []
+    truth_energy_list = []
+    event_nos_list = []
 
     zenith = np.linspace(0, np.pi, 75)
     azimuth = np.linspace(0, 2 * np.pi, 75)
@@ -1070,6 +1071,7 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
 
     max_ze = []
     max_az = []
+    truth_pred_list = []
     
 
     for d in tqdm(data):
@@ -1077,10 +1079,21 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
         fine_ze_all = np.empty(shape=0)
         fine_az_all = np.empty(shape=0)
         bb = model.backbone(d.to(device)).to(device)
-        truth_azimuth.extend(d['azimuth'].cpu().numpy())
-        truth_zenith.extend(d['zenith'].cpu().numpy())
-        truth_energy.extend(d['energy'].cpu().numpy())
-        event_nos.extend(d['event_no'].cpu().numpy())
+        truth_azimuth_list.extend(d['azimuth'].cpu().numpy())
+        truth_zenith_list.extend(d['zenith'].cpu().numpy())
+        truth_energy_list.extend(d['energy'].cpu().numpy())
+        event_nos_list.extend(d['event_no'].cpu().numpy())
+
+        # truth lh
+        truth_azimuth = torch.tensor(d['azimuth'].cpu().numpy())
+        truth_zenith = torch.tensor(d['azimuth'].cpu().numpy())
+        truth_x = torch.cos(truth_azimuth) * torch.sin(truth_zenith)
+        truth_y = torch.sin(truth_azimuth) * torch.sin(truth_zenith)
+        truth_z = torch.cos(truth_zenith)
+        truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(device)
+        x = torch.cat([bb,truth_directions],dim=1).float().to(device)
+        x = model._discriminator(x)
+        truth_pred_list.extend([task(x).detach().cpu().numpy() for task in model._tasks])
 
         for z in range(bb.shape[0]):
             x_list.extend(npix * [bb[z]])
@@ -1181,40 +1194,22 @@ def coverage(model, data: Union[Data, List[Data]]) -> List[Union[torch.Tensor, D
             max_ze.append(fine_ze_all[j*len(fine_log_skymap)+max_id])
             max_az.append(fine_az_all[j*len(fine_log_skymap)+max_id])
 
-    fine_az_all = []
-    fine_ze_all = []
-    fine_x = []
-    fine_log_skymap = []
-    bb = []
-    x = []
+        fine_az_all = []
+        fine_ze_all = []
+        fine_x = []
+        fine_log_skymap = []
+        bb = []
+        x = []
+        torch.cuda.empty_cache()
 
-
-
-    # truth lh
-    truth_azimuth = torch.tensor(truth_azimuth)
-    truth_zenith = torch.tensor(truth_zenith)
-    truth_x = torch.cos(truth_azimuth) * torch.sin(truth_zenith)
-    truth_y = torch.sin(truth_azimuth) * torch.sin(truth_zenith)
-    truth_z = torch.cos(truth_zenith)
-    truth_directions = torch.stack((truth_x, truth_y, truth_z), dim=1).to(device)
-    truth_x_list = []
-    for d in data:
-        x = model.backbone(d.to(device))
-        truth_x_list.extend(x)
-    x = torch.stack(truth_x_list)
-    x = torch.cat([x,truth_directions],dim=1).float().to(device)
-    x = model._discriminator(x)
-    truth_preds = [task(x) for task in model._tasks]
-
-
-    return max_log, truth_preds, truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos
+    return max_log, truth_pred_list, truth_azimuth_list, truth_zenith_list, max_ze, max_az, truth_energy_list, event_nos_list
 
 
 max_log, truth_preds,truth_azimuth, truth_zenith, max_ze, max_az, truth_energy, event_nos = coverage(model,skymap_dataloader)
 truth_log = []
 
-for i in range(len(truth_preds[0])):
-    truth_log.extend(np.log(truth_preds[0][i].detach().cpu().numpy()))
+for i in range(len(truth_preds)):
+    truth_log.extend(np.log(truth_preds[i]))
 
 delta_log = np.array(max_log) - np.array(truth_log)
 
